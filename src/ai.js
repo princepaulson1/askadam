@@ -3,7 +3,7 @@
 import { ADAM_SYSTEM_PROMPT, fallbackReply } from "./adam.js";
 
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
-const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL || "claude-3-5-sonnet-latest";
+const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-6";
 
 export function aiConfigured() {
   return Boolean(process.env.ANTHROPIC_API_KEY);
