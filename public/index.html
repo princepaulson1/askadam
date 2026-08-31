@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f2a2e" />
+  <meta name="description" content="Ask Adam — a private AI mentor helping men build better relationships." />
+  <title>Ask Adam — Guidance for modern men</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+<div id="app">
+
+  <!-- Splash -->
+  <section class="screen splash active" data-screen="splash">
+    <div class="splash-inner">
+      <div class="logo-mark">A</div>
+      <h1 class="brand">Ask Adam</h1>
+      <p class="tagline">Guidance for modern men</p>
+      <div class="loader"></div>
+    </div>
+  </section>
+
+  <!-- Welcome -->
+  <section class="screen" data-screen="welcome">
+    <div class="pad center-col">
+      <div class="logo-mark small">A</div>
+      <h1 class="brand">Ask Adam</h1>
+      <p class="lead">A private mentor helping men build better relationships.</p>
+      <button class="btn primary" data-goto="onboarding">Get Started</button>
+      <button class="link" data-goto="privacy">Privacy Promise</button>
+    </div>
+  </section>
+
+  <!-- Privacy -->
+  <section class="screen" data-screen="privacy">
+    <header class="topbar">
+      <button class="icon-btn" data-goto="welcome" aria-label="Back">&#8592;</button>
+      <span>Privacy Promise</span><span></span>
+    </header>
+    <div class="pad">
+      <p class="lead">Your conversations are private.</p>
+      <ul class="bullets">
+        <li>No account is required to use Ask Adam.</li>
+        <li>Your name, growth stats, and saved wisdom stay on your device.</li>
+        <li>Cycle dates are calculated on your device and never stored on our servers.</li>
+        <li>Questions are sent securely to the AI only to generate a reply.</li>
+      </ul>
+      <button class="btn primary" data-goto="welcome">Back</button>
+    </div>
+  </section>
+
+  <!-- Login -->
+  <section class="screen" data-screen="login">
+    <div class="pad center-col">
+      <div class="logo-mark small">A</div>
+      <h1 class="brand">Ask Adam</h1>
+      <p class="lead">A private mentor helping men build better relationships.</p>
+      <div class="auth-buttons" id="authButtons">
+        <a class="btn provider google" href="/auth/google" id="btnGoogle">Continue with Google</a>
+        <a class="btn provider facebook" href="/auth/facebook" id="btnFacebook">Continue with Facebook</a>
+      </div>
+      <div id="devLogin" class="dev-login hidden">
+        <div class="divider"><span>or test login</span></div>
+        <input type="email" id="devEmail" placeholder="you@example.com" autocomplete="email" />
+        <button class="btn ghost" id="devLoginBtn">Continue with email (test)</button>
+      </div>
+      <p id="authError" class="fineprint auth-error hidden"></p>
+      <button class="link" data-goto="privacy">Privacy Promise</button>
+    </div>
+  </section>
+
+  <!-- Onboarding -->
+  <section class="screen" data-screen="onboarding">
+    <div class="pad center-col onboard">
+      <div class="onboard-slide" data-slide="0">
+        <div class="onboard-emoji">🧭</div>
+        <p class="lead">Most men were never taught how relationships really work.</p>
+      </div>
+      <div class="onboard-slide hidden" data-slide="1">
+        <div class="onboard-emoji">💬</div>
+        <p class="lead">Ask Adam helps you understand emotions, communication, intimacy, and hormonal cycles.</p>
+      </div>
+      <div class="onboard-slide hidden" data-slide="2">
+        <div class="onboard-emoji">🔒</div>
+        <p class="lead">Ask anything. Your questions stay private.</p>
+      </div>
+      <div class="dots">
+        <span class="dot active"></span><span class="dot"></span><span class="dot"></span>
+      </div>
+      <button class="btn primary" id="onboardNext">Next</button>
+    </div>
+  </section>
+
+  <!-- Home -->
+  <section class="screen" data-screen="home">
+    <div class="pad">
+      <p class="greeting" id="greeting">Good evening</p>
+      <h2 class="home-title">What do you need today?</h2>
+      <div class="grid">
+        <button class="tile" data-goto="chat">
+          <span class="tile-emoji">💬</span><span>Ask Adam</span>
+        </button>
+        <button class="tile" data-goto="cycle">
+          <span class="tile-emoji">🌙</span><span>Her Cycle Guide</span>
+        </button>
+        <button class="tile" data-goto="situations">
+          <span class="tile-emoji">🧩</span><span>Real Situations</span>
+        </button>
+        <button class="tile" data-goto="wisdom">
+          <span class="tile-emoji">✨</span><span>Daily Wisdom</span>
+        </button>
+        <button class="tile" data-goto="growth">
+          <span class="tile-emoji">📈</span><span>My Growth</span>
+        </button>
+        <button class="tile" data-goto="settings">
+          <span class="tile-emoji">⚙️</span><span>Settings</span>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- Chat -->
+  <section class="screen chat-screen" data-screen="chat">
+    <header class="topbar">
+      <button class="icon-btn" data-goto="home" aria-label="Home">&#8592;</button>
+      <div class="chat-title"><strong>Ask Adam</strong><small id="chatStatus">Online</small></div>
+      <span class="usage-pill" id="usagePill"></span>
+    </header>
+    <div class="chat-log" id="chatLog"></div>
+    <form class="chat-input" id="chatForm">
+      <input id="chatText" type="text" placeholder="Ask Adam anything…" autocomplete="off" />
+      <button class="btn primary send" type="submit" aria-label="Send">Send</button>
+    </form>
+  </section>
+
+  <!-- Cycle Guide -->
+  <section class="screen" data-screen="cycle">
+    <header class="topbar">
+      <button class="icon-btn" data-goto="home" aria-label="Home">&#8592;</button>
+      <span>Her Cycle Guide</span><span></span>
+    </header>
+    <div class="pad">
+      <label class="field">Last period start date
+        <input type="date" id="lastPeriod" />
+      </label>
+      <label class="field">Average cycle length (days)
+        <input type="number" id="cycleLen" value="28" min="20" max="45" />
+      </label>
+      <button class="btn primary" id="calcCycle">Calculate</button>
+      <div id="cycleResult" class="hidden"></div>
+      <p class="fineprint">Estimates only. Every body is different, and this is a guide to
+        understanding and supporting her — not a medical tool.</p>
+    </div>
+  </section>
+
+  <!-- Real Situations -->
+  <section class="screen" data-screen="situations">
+    <header class="topbar">
+      <button class="icon-btn" data-goto="home" aria-label="Home">&#8592;</button>
+      <span>Real Situations</span><span></span>
+    </header>
+    <div class="pad">
+      <p class="lead small">Choose a situation</p>
+      <div id="situationList" class="stack"></div>
+      <div id="situationAdvice" class="hidden"></div>
+    </div>
+  </section>
+
+  <!-- Daily Wisdom -->
+  <section class="screen" data-screen="wisdom">
+    <header class="topbar">
+      <button class="icon-btn" data-goto="home" aria-label="Home">&#8592;</button>
+      <span>Daily Wisdom</span><span></span>
+    </header>
+    <div class="pad center-col">
+      <div class="wisdom-card" id="wisdomCard">…</div>
+      <div class="row">
+        <button class="btn ghost" id="saveWisdom">Save</button>
+        <button class="btn primary" id="nextWisdom">Next</button>
+      </div>
+      <div id="savedWisdom" class="saved-list"></div>
+    </div>
+  </section>
+
+  <!-- My Growth -->
+  <section class="screen" data-screen="growth">
+    <header class="topbar">
+      <button class="icon-btn" data-goto="home" aria-label="Home">&#8592;</button>
+      <span>My Growth</span><span></span>
+    </header>
+    <div class="pad">
+      <div class="stat"><span id="statQuestions">0</span><small>Questions asked</small></div>
+      <div class="stat"><span id="statAdvice">0</span><small>Advice read</small></div>
+      <div class="stat"><span id="statDays">0</span><small>Days using Ask Adam</small></div>
+      <div class="awareness">
+        <div class="awareness-label">Relationship Awareness</div>
+        <div class="bar"><div class="bar-fill" id="awarenessFill"></div></div>
+        <div class="awareness-pct" id="awarenessPct">0%</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- Settings -->
+  <section class="screen" data-screen="settings">
+    <header class="topbar">
+      <button class="icon-btn" data-goto="home" aria-label="Home">&#8592;</button>
+      <span>Settings</span><span></span>
+    </header>
+    <div class="pad">
+      <label class="field">Your name
+        <input type="text" id="userName" placeholder="Optional" />
+      </label>
+      <label class="toggle-row">
+        <span>Daily notifications</span>
+        <input type="checkbox" id="notifToggle" />
+      </label>
+      <div class="settings-block" data-goto="privacy">Privacy Promise ›</div>
+      <div class="settings-block" data-goto="subscription">Subscription ›</div>
+      <div class="settings-block" id="logoutBtn">Log out</div>
+      <div class="settings-block danger" id="deleteBtn">Delete my account</div>
+    </div>
+  </section>
+
+  <!-- Subscription -->
+  <section class="screen" data-screen="subscription">
+    <header class="topbar">
+      <button class="icon-btn" data-goto="settings" aria-label="Back">&#8592;</button>
+      <span>Premium</span><span></span>
+    </header>
+    <div class="pad center-col">
+      <div class="price-card">
+        <h3>Ask Adam Premium</h3>
+        <div class="price">€6.99<small>/month</small></div>
+        <ul class="bullets">
+          <li>Unlimited Ask Adam questions</li>
+          <li>Advanced relationship coaching</li>
+          <li>Deeper cycle insights</li>
+          <li>Sexual health guidance</li>
+        </ul>
+        <button class="btn primary" id="upgradeBtn">Upgrade (coming soon)</button>
+        <p class="fineprint">Payments aren't enabled in this version yet.</p>
+      </div>
+    </div>
+  </section>
+
+</div>
+<script src="/app.js"></script>
+</body>
+</html>

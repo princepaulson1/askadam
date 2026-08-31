@@ -1,0 +1,23 @@
+// Daily Wisdom cards — short relationship advice for men.
+export const WISDOM = [
+  "A man who listens deeply earns trust.",
+  "Validate her feelings before you try to solve anything.",
+  "Consistency builds more trust than grand gestures ever will.",
+  "When emotions run high, pause. Nothing good is decided in anger.",
+  "Appreciation is attraction's quiet fuel. Say what you notice.",
+  "Silence isn't always rejection. Sometimes it's overwhelm.",
+  "You don't have to win the argument. You have to understand the person.",
+  "Ask 'what do you need right now?' before assuming it's advice.",
+  "Small acts of kindness, repeated daily, outlast any single apology.",
+  "Emotional safety is the foundation of real intimacy.",
+  "Bringing up old mistakes turns a talk into a trial. Stay in today.",
+  "Being right is cheap. Being kind while right is rare.",
+  "Her mood having a reason doesn't make it your fault. Support, don't defend.",
+  "The strongest thing a man can say is: 'You're right, I'm sorry.'",
+  "Presence beats presents. Put the phone down and be there.",
+  "Curiosity keeps love alive. Keep asking who she's becoming.",
+  "Reassurance costs you nothing and can change her whole day.",
+  "Notice the effort she makes that she thinks goes unseen.",
+  "A calm man in a storm is a safe harbor. Be the calm.",
+  "Growth in a relationship starts with owning your own side.",
+];

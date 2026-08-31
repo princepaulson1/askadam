@@ -1,0 +1,10 @@
+{
+  "name": "Ask Adam",
+  "short_name": "Ask Adam",
+  "description": "A private AI mentor helping men build better relationships.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0b2023",
+  "theme_color": "#0f2a2e",
+  "icons": []
+}
