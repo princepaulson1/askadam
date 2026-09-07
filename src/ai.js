@@ -14,7 +14,7 @@ export function aiConfigured() {
  * @param {Array<{role:'user'|'assistant', content:string}>} history - prior turns incl. latest user message
  * @returns {Promise<{reply:string, degraded?:boolean}>}
  */
-export async function generateReply(history) {
+export async function generateReply(history, context = "") {
   const key = process.env.ANTHROPIC_API_KEY;
   const latest = [...history].reverse().find((m) => m.role === "user")?.content || "";
 
@@ -22,6 +22,10 @@ export async function generateReply(history) {
   if (!key) {
     return { reply: fallbackReply(latest), degraded: true };
   }
+
+  const system = context
+    ? `${ADAM_SYSTEM_PROMPT}\n\n# What you remember about this user (use it naturally; don't recite it)\n${context}`
+    : ADAM_SYSTEM_PROMPT;
 
   const messages = history
     .filter((m) => (m.role === "user" || m.role === "assistant") && m.content)
@@ -48,7 +52,7 @@ export async function generateReply(history) {
       model: DEFAULT_MODEL,
       max_tokens: 700,
       temperature: 0.7,
-      system: ADAM_SYSTEM_PROMPT,
+      system,
       messages,
     }),
   });

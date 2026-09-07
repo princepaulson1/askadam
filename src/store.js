@@ -3,8 +3,21 @@
 //
 // All methods are async and return plain objects so callers are storage-agnostic.
 import pg from "pg";
+import { EMBEDDING_DIM } from "./embeddings.js";
 
 const { Pool } = pg;
+
+// Format a JS number[] as a pgvector literal: [0.1,0.2,...]
+function toVector(arr) {
+  return "[" + arr.join(",") + "]";
+}
+
+// Cosine similarity for the in-memory fallback.
+function cosine(a, b) {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
+}
 
 export async function createStore() {
   if (process.env.DATABASE_URL) {
@@ -93,7 +106,66 @@ class PostgresStore {
         day     DATE NOT NULL,
         PRIMARY KEY (user_id, day)
       );
+      -- V3: relationship state, timeline, and check-ins
+      CREATE TABLE IF NOT EXISTS relationship_state (
+        partner_id          INTEGER PRIMARY KEY REFERENCES partners(id) ON DELETE CASCADE,
+        stage               TEXT,
+        tension_level       INTEGER,
+        current_cycle_phase TEXT,
+        goals               JSONB,
+        last_checkin_at     TIMESTAMPTZ,
+        updated_at          TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE TABLE IF NOT EXISTS events (
+        id          SERIAL PRIMARY KEY,
+        user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        partner_id  INTEGER,
+        type        TEXT NOT NULL,
+        summary     TEXT,
+        metadata    JSONB,
+        occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id, occurred_at DESC);
+      CREATE TABLE IF NOT EXISTS checkins (
+        id         SERIAL PRIMARY KEY,
+        user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        partner_id INTEGER,
+        mood       TEXT,
+        note       TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
     `);
+
+    // V3: pgvector for long-term semantic memory (guarded — degrade if unavailable).
+    try {
+      await this.pool.query(`CREATE EXTENSION IF NOT EXISTS vector`);
+      await this.pool.query(`
+        CREATE TABLE IF NOT EXISTS memories (
+          id         SERIAL PRIMARY KEY,
+          user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          kind       TEXT NOT NULL DEFAULT 'message',
+          content    TEXT NOT NULL,
+          embedding  vector(${EMBEDDING_DIM}),
+          metadata   JSONB,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        CREATE INDEX IF NOT EXISTS idx_memories_vec ON memories USING hnsw (embedding vector_cosine_ops);
+        CREATE TABLE IF NOT EXISTS memory_facts (
+          id         SERIAL PRIMARY KEY,
+          user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          partner_id INTEGER,
+          fact       TEXT NOT NULL,
+          confidence REAL,
+          source     TEXT,
+          created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+      `);
+      this.vectorEnabled = true;
+      console.log("pgvector: enabled");
+    } catch (e) {
+      this.vectorEnabled = false;
+      console.warn("pgvector: unavailable —", e.message);
+    }
   }
 
   async findOrCreateUser({ provider, providerId, email, name, avatarUrl }) {
@@ -285,6 +357,69 @@ class PostgresStore {
       savedCount: s.rows[0].n,
     };
   }
+
+  // ---- V3: events / check-ins / state ----
+  async addEvent(userId, { type, summary, partnerId = null, metadata = null }) {
+    await this.pool.query(
+      `INSERT INTO events (user_id, partner_id, type, summary, metadata) VALUES ($1,$2,$3,$4,$5)`,
+      [userId, partnerId, type, summary || null, metadata ? JSON.stringify(metadata) : null]
+    );
+  }
+  async getRecentEvents(userId, limit = 5) {
+    const { rows } = await this.pool.query(
+      `SELECT type, summary, occurred_at FROM events WHERE user_id = $1 ORDER BY occurred_at DESC LIMIT $2`,
+      [userId, limit]
+    );
+    return rows;
+  }
+  async addCheckin(userId, { mood, note, partnerId = null }) {
+    await this.pool.query(
+      `INSERT INTO checkins (user_id, partner_id, mood, note) VALUES ($1,$2,$3,$4)`,
+      [userId, partnerId, mood || null, note || null]
+    );
+  }
+  async getRecentCheckins(userId, limit = 3) {
+    const { rows } = await this.pool.query(
+      `SELECT mood, note, created_at FROM checkins WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+      [userId, limit]
+    );
+    return rows;
+  }
+
+  // ---- V3: semantic memory (pgvector) ----
+  async addMemory(userId, kind, content, embedding, metadata = null) {
+    if (!this.vectorEnabled || !embedding) return;
+    await this.pool.query(
+      `INSERT INTO memories (user_id, kind, content, embedding, metadata)
+       VALUES ($1,$2,$3,$4::vector,$5)`,
+      [userId, kind, content, toVector(embedding), metadata ? JSON.stringify(metadata) : null]
+    );
+  }
+  async searchMemories(userId, queryEmbedding, k = 5) {
+    if (!this.vectorEnabled || !queryEmbedding) return [];
+    const { rows } = await this.pool.query(
+      `SELECT content, kind, 1 - (embedding <=> $2::vector) AS score
+         FROM memories
+        WHERE user_id = $1 AND embedding IS NOT NULL
+        ORDER BY embedding <=> $2::vector
+        LIMIT $3`,
+      [userId, toVector(queryEmbedding), k]
+    );
+    return rows;
+  }
+  async addFact(userId, { fact, partnerId = null, confidence = null, source = null }) {
+    await this.pool.query(
+      `INSERT INTO memory_facts (user_id, partner_id, fact, confidence, source) VALUES ($1,$2,$3,$4,$5)`,
+      [userId, partnerId, fact, confidence, source]
+    );
+  }
+  async getFacts(userId, limit = 10) {
+    const { rows } = await this.pool.query(
+      `SELECT fact FROM memory_facts WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2`,
+      [userId, limit]
+    );
+    return rows.map((r) => r.fact);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -300,6 +435,11 @@ class MemoryStore {
     this.saved = new Map(); // userId -> Set(text)
     this.partners = new Map(); // userId -> partner object (primary)
     this.activeDays = new Map(); // userId -> Set(day)
+    this.events = new Map(); // userId -> [{type, summary, occurred_at}]
+    this.checkins = new Map(); // userId -> [{mood, note, created_at}]
+    this.memories = new Map(); // userId -> [{kind, content, embedding}]
+    this.facts = new Map(); // userId -> [fact]
+    this.vectorEnabled = true; // naive cosine search in memory
   }
 
   async findOrCreateUser({ provider, providerId, email, name, avatarUrl }) {
@@ -332,6 +472,10 @@ class MemoryStore {
     this.saved.delete(id);
     this.partners.delete(id);
     this.activeDays.delete(id);
+    this.events.delete(id);
+    this.checkins.delete(id);
+    this.memories.delete(id);
+    this.facts.delete(id);
     for (const k of [...this.usage.keys()]) if (k.startsWith(id + ":")) this.usage.delete(k);
   }
 
@@ -404,5 +548,43 @@ class MemoryStore {
       daysActive: (this.activeDays.get(userId) || new Set()).size,
       savedCount: (this.saved.get(userId) || new Set()).size,
     };
+  }
+
+  // ---- V3: events / check-ins / state ----
+  async addEvent(userId, { type, summary }) {
+    if (!this.events.has(userId)) this.events.set(userId, []);
+    this.events.get(userId).push({ type, summary, occurred_at: new Date().toISOString() });
+  }
+  async getRecentEvents(userId, limit = 5) {
+    return (this.events.get(userId) || []).slice(-limit).reverse();
+  }
+  async addCheckin(userId, { mood, note }) {
+    if (!this.checkins.has(userId)) this.checkins.set(userId, []);
+    this.checkins.get(userId).push({ mood, note, created_at: new Date().toISOString() });
+  }
+  async getRecentCheckins(userId, limit = 3) {
+    return (this.checkins.get(userId) || []).slice(-limit).reverse();
+  }
+
+  // ---- V3: semantic memory (naive cosine) ----
+  async addMemory(userId, kind, content, embedding) {
+    if (!embedding) return;
+    if (!this.memories.has(userId)) this.memories.set(userId, []);
+    this.memories.get(userId).push({ kind, content, embedding });
+  }
+  async searchMemories(userId, queryEmbedding, k = 5) {
+    if (!queryEmbedding) return [];
+    const items = this.memories.get(userId) || [];
+    return items
+      .map((m) => ({ content: m.content, kind: m.kind, score: cosine(m.embedding, queryEmbedding) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, k);
+  }
+  async addFact(userId, { fact }) {
+    if (!this.facts.has(userId)) this.facts.set(userId, []);
+    this.facts.get(userId).push(fact);
+  }
+  async getFacts(userId, limit = 10) {
+    return (this.facts.get(userId) || []).slice(-limit).reverse();
   }
 }

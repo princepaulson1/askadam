@@ -6,10 +6,11 @@ import { fileURLToPath } from "node:url";
 
 import { WISDOM } from "./data/wisdom.js";
 import { SITUATIONS } from "./data/situations.js";
-import { CYCLE_PHASES } from "./data/cycle.js";
+import { CYCLE_PHASES, computePhase } from "./data/cycle.js";
 import { createStore } from "./store.js";
 import { configureAuth, requireAuth, authConfig, clearUserCache } from "./auth.js";
 import { generateReply, aiConfigured } from "./ai.js";
+import { embedOne, embeddingsConfigured } from "./embeddings.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -44,6 +45,53 @@ function publicUser(u) {
     isPremium: u.is_premium,
     provider: u.provider,
   };
+}
+
+// Build the personalization context for Adam: partner + cycle phase, recent
+// events/check-ins, known facts, and semantically-relevant past conversation (RAG).
+async function buildUserContext(userId, message) {
+  const parts = [];
+  let queryEmbedding = null;
+  try {
+    const partner = await store.getPartner(userId);
+    if (partner?.displayName) parts.push(`Partner's name: ${partner.displayName}.`);
+    if (partner?.cycle?.lastPeriod) {
+      const r = computePhase(partner.cycle.lastPeriod, partner.cycle.cycleLength || 28);
+      if (r) parts.push(`Her current cycle phase: ${r.phase} (day ${r.dayOfCycle} of ${r.cycleLength}).`);
+    }
+    const events = await store.getRecentEvents(userId, 5);
+    if (events.length) parts.push("Recent situations he raised: " + events.map((e) => e.summary || e.type).join("; ") + ".");
+    const checkins = await store.getRecentCheckins(userId, 2);
+    if (checkins.length) parts.push("Recent check-ins: " + checkins.map((c) => [c.mood, c.note].filter(Boolean).join(" — ")).join("; ") + ".");
+    const facts = await store.getFacts(userId, 8);
+    if (facts.length) parts.push("Known facts: " + facts.join("; ") + ".");
+
+    if (embeddingsConfigured() && store.vectorEnabled) {
+      try {
+        queryEmbedding = await embedOne(message, "query");
+        const mems = await store.searchMemories(userId, queryEmbedding, 5);
+        const relevant = mems.filter((m) => m.score == null || m.score > 0.5).map((m) => m.content);
+        if (relevant.length) parts.push("Relevant things he said before:\n- " + relevant.join("\n- "));
+      } catch (e) {
+        console.warn("memory retrieval skipped:", e.status || e.message);
+      }
+    }
+  } catch (e) {
+    console.warn("context build error:", e.message);
+  }
+  return { context: parts.join("\n"), queryEmbedding };
+}
+
+// Persist this exchange as long-term memory (fire-and-forget; never blocks the reply).
+async function storeMemories(userId, userMsg, reply, userEmbedding) {
+  if (!embeddingsConfigured() || !store.vectorEnabled) return;
+  try {
+    if (userEmbedding) await store.addMemory(userId, "message", userMsg, userEmbedding, { role: "user" });
+    const replyEmb = await embedOne(reply, "document");
+    await store.addMemory(userId, "message", reply, replyEmb, { role: "assistant" });
+  } catch (e) {
+    console.warn("memory store skipped:", e.status || e.message);
+  }
 }
 
 // ---- Public endpoints ----
@@ -113,9 +161,12 @@ app.post("/api/chat", requireAuth, async (req, res) => {
 
   try {
     const history = await store.getRecentMessages(userId, 10);
-    const { reply, degraded } = await generateReply(history);
+    const { context, queryEmbedding } = await buildUserContext(userId, message);
+    const { reply, degraded } = await generateReply(history, context);
     await store.addMessage(userId, "assistant", reply);
     res.json({ reply, degraded, remaining });
+    // Save this exchange to long-term memory without delaying the response.
+    storeMemories(userId, message, reply, queryEmbedding).catch(() => {});
   } catch (err) {
     console.error("AI error:", err.status || "", err.detail || err.message || err);
     res.status(502).json({
@@ -161,6 +212,30 @@ app.post("/api/cycle", requireAuth, async (req, res) => {
   const cycleLength = Math.max(20, Math.min(45, Number(req.body?.cycleLength) || 28));
   await store.setCycle(req.appUser.id, lastPeriod, cycleLength);
   await store.incrementAdviceRead(req.appUser.id);
+  const phase = lastPeriod ? computePhase(lastPeriod, cycleLength)?.phase : null;
+  await store.addEvent(req.appUser.id, { type: "cycle_updated", summary: phase ? `Cycle updated — ${phase} phase` : "Cycle updated" });
+  res.json({ ok: true });
+});
+
+// ---- Relationship timeline / check-ins (V3) ----
+app.get("/api/timeline", requireAuth, async (req, res) => {
+  const [events, checkins] = await Promise.all([
+    store.getRecentEvents(req.appUser.id, 20),
+    store.getRecentCheckins(req.appUser.id, 10),
+  ]);
+  res.json({ events, checkins });
+});
+app.post("/api/event", requireAuth, async (req, res) => {
+  const type = String(req.body?.type || "note").slice(0, 40);
+  const summary = req.body?.summary != null ? String(req.body.summary).slice(0, 300) : null;
+  await store.addEvent(req.appUser.id, { type, summary });
+  res.json({ ok: true });
+});
+app.post("/api/checkin", requireAuth, async (req, res) => {
+  const mood = req.body?.mood != null ? String(req.body.mood).slice(0, 40) : null;
+  const note = req.body?.note != null ? String(req.body.note).slice(0, 300) : null;
+  await store.addCheckin(req.appUser.id, { mood, note });
+  await store.addEvent(req.appUser.id, { type: "checkin", summary: [mood, note].filter(Boolean).join(" — ") || "Check-in" });
   res.json({ ok: true });
 });
 

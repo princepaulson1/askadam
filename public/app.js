@@ -274,6 +274,7 @@
           adviceBox.innerHTML = `<div class="advice-card"><h3>${s.title}</h3><p>${s.advice}</p></div>`;
           adviceBox.scrollIntoView({ behavior: "smooth", block: "nearest" });
           api("/api/track-advice", { method: "POST" }).catch(() => {});
+          api("/api/event", { method: "POST", body: JSON.stringify({ type: "concern", summary: `Looked up: ${s.title}` }) }).catch(() => {});
         });
         list.appendChild(b);
       });
