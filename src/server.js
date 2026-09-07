@@ -26,7 +26,26 @@ const store = await createStore();
 const app = express();
 app.set("trust proxy", 1); // Render sits behind a proxy (needed for secure cookies)
 app.use(cors());
-app.use(express.json({ limit: "1mb" }));
+app.use(
+  express.json({
+    limit: "1mb",
+    // Keep the raw body so we can verify Paddle webhook signatures.
+    verify: (req, _res, buf) => {
+      req.rawBody = buf;
+    },
+  })
+);
+
+// ---- Billing config (Paddle) ----
+const PADDLE = {
+  apiKey: process.env.PADDLE_API_KEY,
+  clientToken: process.env.PADDLE_CLIENT_TOKEN,
+  webhookSecret: process.env.PADDLE_WEBHOOK_SECRET,
+  environment: process.env.PADDLE_ENV || "sandbox",
+  monthlyPriceId: process.env.PADDLE_MONTHLY_PRICE_ID,
+  annualPriceId: process.env.PADDLE_ANNUAL_PRICE_ID,
+};
+const billingEnabled = () => Boolean(PADDLE.clientToken && (PADDLE.monthlyPriceId || PADDLE.annualPriceId));
 
 // Auth0 (mounts /login, /logout, /callback and attaches req.appUser when logged in).
 configureAuth(app, store);
@@ -139,10 +158,12 @@ app.get("/api/cycle-advice", (req, res) => res.json({ phases: CYCLE_PHASES }));
 // ---- Account endpoints ----
 app.get("/api/me", requireAuth, async (req, res) => {
   await store.trackActiveDay(req.appUser.id, today());
-  const remaining = req.appUser.is_premium
+  const premium = await store.isPremium(req.appUser.id);
+  const remaining = premium
     ? null
     : Math.max(0, FREE_DAILY_LIMIT - (await store.getUsageCount(req.appUser.id, today())));
-  res.json({ user: publicUser(req.appUser), remaining, freeLimit: FREE_DAILY_LIMIT });
+  const user = { ...publicUser(req.appUser), isPremium: premium };
+  res.json({ user, remaining, freeLimit: FREE_DAILY_LIMIT });
 });
 
 app.patch("/api/me", requireAuth, async (req, res) => {
@@ -172,8 +193,9 @@ app.post("/api/chat", requireAuth, async (req, res) => {
   const message = String(req.body?.message || "").trim();
   if (!message) return res.status(400).json({ error: "Message is required." });
 
+  const premium = await store.isPremium(userId);
   // Per-user freemium limit (premium users are unlimited).
-  if (!req.appUser.is_premium) {
+  if (!premium) {
     const used = await store.getUsageCount(userId, today());
     if (used >= FREE_DAILY_LIMIT) {
       return res.status(429).json({
@@ -185,8 +207,8 @@ app.post("/api/chat", requireAuth, async (req, res) => {
   }
 
   await store.addMessage(userId, "user", message);
-  const count = req.appUser.is_premium ? 0 : await store.incrementUsage(userId, today());
-  const remaining = req.appUser.is_premium ? null : Math.max(0, FREE_DAILY_LIMIT - count);
+  const count = premium ? 0 : await store.incrementUsage(userId, today());
+  const remaining = premium ? null : Math.max(0, FREE_DAILY_LIMIT - count);
 
   try {
     const history = await store.getRecentMessages(userId, 10);
@@ -299,6 +321,75 @@ app.post("/api/relationship/accept", requireAuth, async (req, res) => {
 app.post("/api/relationship/unlink", requireAuth, async (req, res) => {
   await store.unlinkRelationship(req.appUser.id);
   res.json({ ok: true });
+});
+
+// ---- Billing (Paddle) ----
+// Public-safe config the checkout button needs (client token + price ids are not secret).
+app.get("/api/billing/config", (req, res) => {
+  res.json({
+    enabled: billingEnabled(),
+    environment: PADDLE.environment,
+    clientToken: PADDLE.clientToken || null,
+    monthlyPriceId: PADDLE.monthlyPriceId || null,
+    annualPriceId: PADDLE.annualPriceId || null,
+  });
+});
+
+// Current subscription status for the logged-in user.
+app.get("/api/billing/status", requireAuth, async (req, res) => {
+  const ent = await store.getEntitlement(req.appUser.id);
+  res.json({
+    premium: await store.isPremium(req.appUser.id),
+    status: ent?.status || "inactive",
+    plan: ent?.plan || null,
+    currentPeriodEnd: ent?.current_period_end || ent?.currentPeriodEnd || null,
+  });
+});
+
+// Paddle webhook: source of truth for entitlement changes. Verifies the signature
+// (HMAC-SHA256 over "ts:rawBody") when a secret is configured.
+app.post("/api/paddle/webhook", async (req, res) => {
+  try {
+    if (PADDLE.webhookSecret) {
+      const header = req.headers["paddle-signature"] || "";
+      const parts = Object.fromEntries(String(header).split(";").map((kv) => kv.split("=")));
+      const ts = parts.ts;
+      const h1 = parts.h1;
+      const signed = `${ts}:${req.rawBody?.toString("utf8") || ""}`;
+      const expected = crypto.createHmac("sha256", PADDLE.webhookSecret).update(signed).digest("hex");
+      if (!ts || !h1 || expected !== h1) {
+        console.warn("Paddle webhook: signature mismatch");
+        return res.status(400).json({ error: "invalid signature" });
+      }
+    }
+
+    const event = req.body;
+    const type = event?.event_type || "";
+    const data = event?.data || {};
+    const userId = Number(data?.custom_data?.user_id);
+
+    if (userId && type.startsWith("subscription.")) {
+      const status =
+        type === "subscription.canceled"
+          ? "canceled"
+          : data.status || "active"; // active | trialing | past_due | canceled | paused
+      const priceId = data?.items?.[0]?.price?.id;
+      const plan = priceId === PADDLE.annualPriceId ? "annual" : priceId === PADDLE.monthlyPriceId ? "monthly" : null;
+      await store.setEntitlement(userId, {
+        status,
+        plan,
+        provider: "paddle",
+        customerId: data.customer_id,
+        subscriptionId: data.id,
+        currentPeriodEnd: data?.current_billing_period?.ends_at || null,
+      });
+      console.log(`Paddle webhook: user ${userId} -> ${status} (${plan || "?"})`);
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("Paddle webhook error:", err.message);
+    res.status(200).json({ ok: true }); // ack anyway so Paddle doesn't hammer retries
+  }
 });
 
 // SPA fallback: serve index.html for non-API, non-auth GET routes.

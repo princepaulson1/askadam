@@ -151,6 +151,17 @@ class PostgresStore {
         created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
         expires_at   TIMESTAMPTZ
       );
+      -- Provider-agnostic billing entitlements (Paddle now, RevenueCat/Stripe later all write here)
+      CREATE TABLE IF NOT EXISTS entitlements (
+        user_id                  INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        status                   TEXT NOT NULL DEFAULT 'inactive',
+        plan                     TEXT,
+        provider                 TEXT,
+        provider_customer_id     TEXT,
+        provider_subscription_id TEXT,
+        current_period_end       TIMESTAMPTZ,
+        updated_at               TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
     `);
 
     // V3: pgvector for long-term semantic memory (guarded — degrade if unavailable).
@@ -496,6 +507,35 @@ class PostgresStore {
       [userId]
     );
   }
+
+  // ---- Billing entitlements ----
+  async setEntitlement(userId, { status, plan, provider, customerId, subscriptionId, currentPeriodEnd }) {
+    await this.pool.query(
+      `INSERT INTO entitlements (user_id, status, plan, provider, provider_customer_id, provider_subscription_id, current_period_end, updated_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7, now())
+       ON CONFLICT (user_id) DO UPDATE
+         SET status = EXCLUDED.status, plan = EXCLUDED.plan, provider = EXCLUDED.provider,
+             provider_customer_id = COALESCE(EXCLUDED.provider_customer_id, entitlements.provider_customer_id),
+             provider_subscription_id = COALESCE(EXCLUDED.provider_subscription_id, entitlements.provider_subscription_id),
+             current_period_end = EXCLUDED.current_period_end, updated_at = now()`,
+      [userId, status, plan || null, provider || null, customerId || null, subscriptionId || null, currentPeriodEnd || null]
+    );
+  }
+  async getEntitlement(userId) {
+    const { rows } = await this.pool.query(`SELECT * FROM entitlements WHERE user_id = $1`, [userId]);
+    return rows[0] || null;
+  }
+  async isPremium(userId) {
+    const { rows } = await this.pool.query(
+      `SELECT
+         (SELECT is_premium FROM users WHERE id = $1) AS manual,
+         (SELECT 1 FROM entitlements
+            WHERE user_id = $1 AND status IN ('active','trialing')
+              AND (current_period_end IS NULL OR current_period_end > now())) AS ent`,
+      [userId]
+    );
+    return Boolean(rows[0]?.manual || rows[0]?.ent);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -517,6 +557,7 @@ class MemoryStore {
     this.facts = new Map(); // userId -> [fact]
     this.invites = new Map(); // code -> {fromUserId, status, expiresAt}
     this.relationships = []; // [{a, b, status, created_at}]
+    this.entitlements = new Map(); // userId -> entitlement
     this.vectorEnabled = true; // naive cosine search in memory
   }
 
@@ -555,6 +596,7 @@ class MemoryStore {
     this.memories.delete(id);
     this.facts.delete(id);
     this.relationships = this.relationships.filter((r) => r.a !== id && r.b !== id);
+    this.entitlements.delete(id);
     for (const [code, inv] of [...this.invites]) if (inv.fromUserId === id) this.invites.delete(code);
     for (const k of [...this.usage.keys()]) if (k.startsWith(id + ":")) this.usage.delete(k);
   }
@@ -703,5 +745,22 @@ class MemoryStore {
     this.relationships.forEach((r) => {
       if (r.status === "active" && (r.a === userId || r.b === userId)) r.status = "ended";
     });
+  }
+
+  // ---- Billing entitlements ----
+  async setEntitlement(userId, e) {
+    this.entitlements.set(Number(userId), { ...e, updated_at: new Date().toISOString() });
+  }
+  async getEntitlement(userId) {
+    return this.entitlements.get(Number(userId)) || null;
+  }
+  async isPremium(userId) {
+    const u = this.users.get(Number(userId));
+    if (u?.is_premium) return true;
+    const e = this.entitlements.get(Number(userId));
+    if (!e) return false;
+    const active = e.status === "active" || e.status === "trialing";
+    const notExpired = !e.currentPeriodEnd || new Date(e.currentPeriodEnd) > new Date();
+    return active && notExpired;
   }
 }

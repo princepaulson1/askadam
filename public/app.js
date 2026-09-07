@@ -104,6 +104,7 @@
       const cfg = await (await api("/api/config")).json();
       freeLimit = cfg.freeLimit || 5;
     } catch {}
+    initBilling();
 
     // Check session (Auth0-backed).
     const r = await api("/api/me");
@@ -473,6 +474,58 @@
     await api("/api/me", { method: "DELETE" });
     window.location.href = "/logout"; // ends the Auth0 session after deletion
   });
-  const upgrade = document.getElementById("upgradeBtn");
-  if (upgrade) upgrade.addEventListener("click", () => alert("Payments aren't enabled yet in this version."));
+  // ---------- Billing (Paddle) ----------
+  let billing = null;
+  async function initBilling() {
+    try {
+      billing = await (await api("/api/billing/config")).json();
+      const note = document.getElementById("billingNote");
+      if (!billing.enabled) {
+        if (note) note.textContent = "Payments aren't configured yet.";
+        return;
+      }
+      if (window.Paddle) {
+        if (billing.environment === "sandbox") Paddle.Environment.set("sandbox");
+        Paddle.Initialize({
+          token: billing.clientToken,
+          eventCallback: (e) => {
+            if (e && e.name === "checkout.completed") {
+              // The webhook flips entitlement server-side; refresh shortly after.
+              setTimeout(refreshMe, 2500);
+            }
+          },
+        });
+      }
+    } catch {}
+  }
+
+  function openCheckout(priceId) {
+    if (!billing || !billing.enabled || !window.Paddle || !priceId) {
+      alert("Payments aren't available right now.");
+      return;
+    }
+    Paddle.Checkout.open({
+      items: [{ priceId, quantity: 1 }],
+      customer: me?.email ? { email: me.email } : undefined,
+      customData: { user_id: String(me?.id || "") },
+      settings: { displayMode: "overlay", theme: "dark" },
+    });
+  }
+
+  async function refreshMe() {
+    try {
+      const d = await (await api("/api/me")).json();
+      if (d.user) me = d.user;
+      if (me?.isPremium) {
+        setUsage(null);
+        alert("You're Premium now — enjoy unlimited access to Adam.");
+        show("home");
+      }
+    } catch {}
+  }
+
+  const buyM = document.getElementById("buyMonthly");
+  const buyA = document.getElementById("buyAnnual");
+  if (buyM) buyM.addEventListener("click", () => openCheckout(billing?.monthlyPriceId));
+  if (buyA) buyA.addEventListener("click", () => openCheckout(billing?.annualPriceId));
 })();
