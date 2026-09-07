@@ -134,6 +134,23 @@ class PostgresStore {
         note       TEXT,
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
+      -- V3 Phase 22: link two real app users into a relationship (invite + consent)
+      CREATE TABLE IF NOT EXISTS relationships (
+        id         SERIAL PRIMARY KEY,
+        user_a_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        user_b_id  INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        status     TEXT NOT NULL DEFAULT 'active',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        UNIQUE (user_a_id, user_b_id)
+      );
+      CREATE TABLE IF NOT EXISTS relationship_invites (
+        id           SERIAL PRIMARY KEY,
+        from_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        code         TEXT NOT NULL UNIQUE,
+        status       TEXT NOT NULL DEFAULT 'pending',
+        created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+        expires_at   TIMESTAMPTZ
+      );
     `);
 
     // V3: pgvector for long-term semantic memory (guarded — degrade if unavailable).
@@ -226,6 +243,14 @@ class PostgresStore {
       [userId, limit]
     );
     return rows.reverse();
+  }
+
+  async countUserMessages(userId) {
+    const { rows } = await this.pool.query(
+      `SELECT count(*)::int AS n FROM chat_messages WHERE user_id = $1 AND role = 'user'`,
+      [userId]
+    );
+    return rows[0].n;
   }
 
   async getSavedWisdom(userId) {
@@ -420,6 +445,57 @@ class PostgresStore {
     );
     return rows.map((r) => r.fact);
   }
+
+  // ---- V3 Phase 22: relationship linking ----
+  async createInvite(userId, code, expiresAt) {
+    await this.pool.query(
+      `INSERT INTO relationship_invites (from_user_id, code, expires_at) VALUES ($1,$2,$3)`,
+      [userId, code, expiresAt]
+    );
+    return code;
+  }
+  async acceptInvite(userId, code) {
+    const { rows } = await this.pool.query(
+      `SELECT * FROM relationship_invites WHERE code = $1`,
+      [code]
+    );
+    const invite = rows[0];
+    if (!invite) return { error: "Invalid invite code." };
+    if (invite.status !== "pending") return { error: "This invite was already used." };
+    if (invite.expires_at && new Date(invite.expires_at) < new Date()) return { error: "This invite has expired." };
+    if (invite.from_user_id === userId) return { error: "You can't accept your own invite." };
+    // Order the pair consistently to respect the UNIQUE constraint.
+    const a = Math.min(invite.from_user_id, userId);
+    const b = Math.max(invite.from_user_id, userId);
+    await this.pool.query(
+      `INSERT INTO relationships (user_a_id, user_b_id, status) VALUES ($1,$2,'active')
+       ON CONFLICT (user_a_id, user_b_id) DO UPDATE SET status = 'active'`,
+      [a, b]
+    );
+    await this.pool.query(`UPDATE relationship_invites SET status = 'accepted' WHERE id = $1`, [invite.id]);
+    return { ok: true };
+  }
+  async getRelationship(userId) {
+    const { rows } = await this.pool.query(
+      `SELECT r.*, ua.name AS a_name, ub.name AS b_name
+         FROM relationships r
+         JOIN users ua ON ua.id = r.user_a_id
+         JOIN users ub ON ub.id = r.user_b_id
+        WHERE r.status = 'active' AND (r.user_a_id = $1 OR r.user_b_id = $1)
+        ORDER BY r.created_at DESC LIMIT 1`,
+      [userId]
+    );
+    if (!rows[0]) return null;
+    const r = rows[0];
+    const isA = r.user_a_id === userId;
+    return { id: r.id, partnerName: isA ? r.b_name : r.a_name, since: r.created_at };
+  }
+  async unlinkRelationship(userId) {
+    await this.pool.query(
+      `UPDATE relationships SET status = 'ended' WHERE status = 'active' AND (user_a_id = $1 OR user_b_id = $1)`,
+      [userId]
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -439,6 +515,8 @@ class MemoryStore {
     this.checkins = new Map(); // userId -> [{mood, note, created_at}]
     this.memories = new Map(); // userId -> [{kind, content, embedding}]
     this.facts = new Map(); // userId -> [fact]
+    this.invites = new Map(); // code -> {fromUserId, status, expiresAt}
+    this.relationships = []; // [{a, b, status, created_at}]
     this.vectorEnabled = true; // naive cosine search in memory
   }
 
@@ -476,6 +554,8 @@ class MemoryStore {
     this.checkins.delete(id);
     this.memories.delete(id);
     this.facts.delete(id);
+    this.relationships = this.relationships.filter((r) => r.a !== id && r.b !== id);
+    for (const [code, inv] of [...this.invites]) if (inv.fromUserId === id) this.invites.delete(code);
     for (const k of [...this.usage.keys()]) if (k.startsWith(id + ":")) this.usage.delete(k);
   }
 
@@ -494,6 +574,9 @@ class MemoryStore {
   async getRecentMessages(userId, limit = 50) {
     const all = this.messages.get(userId) || [];
     return all.slice(-limit);
+  }
+  async countUserMessages(userId) {
+    return (this.messages.get(userId) || []).filter((m) => m.role === "user").length;
   }
 
   async getSavedWisdom(userId) { return [...(this.saved.get(userId) || [])].reverse(); }
@@ -586,5 +669,39 @@ class MemoryStore {
   }
   async getFacts(userId, limit = 10) {
     return (this.facts.get(userId) || []).slice(-limit).reverse();
+  }
+
+  // ---- V3 Phase 22: relationship linking ----
+  async createInvite(userId, code, expiresAt) {
+    this.invites.set(code, { fromUserId: Number(userId), status: "pending", expiresAt });
+    return code;
+  }
+  async acceptInvite(userId, code) {
+    userId = Number(userId);
+    const invite = this.invites.get(code);
+    if (!invite) return { error: "Invalid invite code." };
+    if (invite.status !== "pending") return { error: "This invite was already used." };
+    if (invite.expiresAt && new Date(invite.expiresAt) < new Date()) return { error: "This invite has expired." };
+    if (invite.fromUserId === userId) return { error: "You can't accept your own invite." };
+    const a = Math.min(invite.fromUserId, userId);
+    const b = Math.max(invite.fromUserId, userId);
+    if (!this.relationships.some((r) => r.a === a && r.b === b && r.status === "active")) {
+      this.relationships.push({ a, b, status: "active", created_at: new Date().toISOString() });
+    }
+    invite.status = "accepted";
+    return { ok: true };
+  }
+  async getRelationship(userId) {
+    userId = Number(userId);
+    const r = [...this.relationships].reverse().find((x) => x.status === "active" && (x.a === userId || x.b === userId));
+    if (!r) return null;
+    const otherId = r.a === userId ? r.b : r.a;
+    return { id: `${r.a}-${r.b}`, partnerName: this.users.get(otherId)?.name || null, since: r.created_at };
+  }
+  async unlinkRelationship(userId) {
+    userId = Number(userId);
+    this.relationships.forEach((r) => {
+      if (r.status === "active" && (r.a === userId || r.b === userId)) r.status = "ended";
+    });
   }
 }

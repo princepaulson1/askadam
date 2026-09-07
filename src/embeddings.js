@@ -48,3 +48,4 @@ export async function embedOne(text, inputType = "document") {
   const [vec] = await embed([text], inputType);
   return vec;
 }
+

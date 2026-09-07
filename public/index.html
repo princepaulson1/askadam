@@ -214,6 +214,22 @@
         <span>Daily notifications</span>
         <input type="checkbox" id="notifToggle" />
       </label>
+
+      <div class="link-card">
+        <div class="link-title">Partner link</div>
+        <p class="fineprint" id="plStatus">Not linked with a partner.</p>
+        <div class="row">
+          <button class="btn ghost" id="plInviteBtn">Invite partner</button>
+          <button class="btn ghost hidden" id="plUnlink">Unlink</button>
+        </div>
+        <p class="fineprint hidden" id="plInviteOut"></p>
+        <label class="field" style="margin-top:12px">Have an invite code?
+          <input type="text" id="plCode" placeholder="Enter code" autocomplete="off" />
+        </label>
+        <button class="btn ghost" id="plAcceptBtn">Link with code</button>
+        <p class="fineprint hidden" id="plMsg"></p>
+      </div>
+
       <div class="settings-block" data-goto="privacy">Privacy Promise ›</div>
       <div class="settings-block" data-goto="subscription">Subscription ›</div>
       <div class="settings-block" id="logoutBtn">Log out</div>

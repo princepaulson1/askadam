@@ -2,6 +2,7 @@ import "dotenv/config";
 import express from "express";
 import cors from "cors";
 import path from "node:path";
+import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 
 import { WISDOM } from "./data/wisdom.js";
@@ -9,7 +10,7 @@ import { SITUATIONS } from "./data/situations.js";
 import { CYCLE_PHASES, computePhase } from "./data/cycle.js";
 import { createStore } from "./store.js";
 import { configureAuth, requireAuth, authConfig, clearUserCache } from "./auth.js";
-import { generateReply, aiConfigured } from "./ai.js";
+import { generateReply, aiConfigured, extractInsights } from "./ai.js";
 import { embedOne, embeddingsConfigured } from "./embeddings.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -94,6 +95,34 @@ async function storeMemories(userId, userMsg, reply, userEmbedding) {
   }
 }
 
+// Phase 21: every few turns, distill durable facts + a session summary in the background.
+async function maybeExtractInsights(userId) {
+  try {
+    const n = await store.countUserMessages(userId);
+    if (!n || n % 5 !== 0) return; // run on every 5th user message
+    const msgs = await store.getRecentMessages(userId, 12);
+    const { facts, summary } = await extractInsights(msgs);
+
+    if (summary && embeddingsConfigured() && store.vectorEnabled) {
+      const emb = await embedOne(summary, "document").catch(() => null);
+      if (emb) await store.addMemory(userId, "summary", summary, emb, { kind: "summary" });
+    }
+    if (facts?.length) {
+      const existing = (await store.getFacts(userId, 100)).map((f) => f.toLowerCase());
+      for (const f of facts) {
+        const lf = f.toLowerCase();
+        const dup = existing.some((e) => e.includes(lf) || lf.includes(e));
+        if (!dup) {
+          await store.addFact(userId, { fact: f, source: "auto" });
+          existing.push(lf);
+        }
+      }
+    }
+  } catch (e) {
+    console.warn("insight extraction skipped:", e.status || e.message);
+  }
+}
+
 // ---- Public endpoints ----
 app.get("/api/health", (req, res) => {
   res.json({ ok: true, aiConfigured: aiConfigured() });
@@ -165,8 +194,11 @@ app.post("/api/chat", requireAuth, async (req, res) => {
     const { reply, degraded } = await generateReply(history, context);
     await store.addMessage(userId, "assistant", reply);
     res.json({ reply, degraded, remaining });
-    // Save this exchange to long-term memory without delaying the response.
-    storeMemories(userId, message, reply, queryEmbedding).catch(() => {});
+    // Save this exchange to long-term memory, then occasionally distill facts — all in
+    // the background so the response isn't delayed.
+    storeMemories(userId, message, reply, queryEmbedding)
+      .then(() => maybeExtractInsights(userId))
+      .catch(() => {});
   } catch (err) {
     console.error("AI error:", err.status || "", err.detail || err.message || err);
     res.status(502).json({
@@ -242,6 +274,30 @@ app.post("/api/checkin", requireAuth, async (req, res) => {
 // ---- Advice-read tracking ----
 app.post("/api/track-advice", requireAuth, async (req, res) => {
   await store.incrementAdviceRead(req.appUser.id);
+  res.json({ ok: true });
+});
+
+// ---- Relationship linking (V3 Phase 22) ----
+// Note on privacy: linking does NOT share either person's private Adam chats. It only
+// records that two accounts are connected (basis for future shared/consented features).
+app.get("/api/relationship", requireAuth, async (req, res) => {
+  res.json({ relationship: await store.getRelationship(req.appUser.id) });
+});
+app.post("/api/relationship/invite", requireAuth, async (req, res) => {
+  const code = crypto.randomBytes(5).toString("hex").toUpperCase(); // 10-char code
+  const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+  await store.createInvite(req.appUser.id, code, expiresAt);
+  res.json({ ok: true, code, expiresAt });
+});
+app.post("/api/relationship/accept", requireAuth, async (req, res) => {
+  const code = String(req.body?.code || "").trim().toUpperCase();
+  if (!code) return res.status(400).json({ error: "Enter an invite code." });
+  const result = await store.acceptInvite(req.appUser.id, code);
+  if (result.error) return res.status(400).json(result);
+  res.json({ ok: true });
+});
+app.post("/api/relationship/unlink", requireAuth, async (req, res) => {
+  await store.unlinkRelationship(req.appUser.id);
   res.json({ ok: true });
 });
 

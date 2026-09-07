@@ -2,6 +2,68 @@
 (function () {
   "use strict";
 
+  // ---------- Minimal, safe Markdown renderer (ChatGPT-style output) ----------
+  function escapeHtml(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+  function inlineMd(s) {
+    return s
+      .replace(/`([^`]+)`/g, "<code>$1</code>")
+      .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+      .replace(/(^|[^*])\*([^*\n]+)\*(?!\*)/g, "$1<em>$2</em>")
+      .replace(/\b(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+  }
+  function renderMarkdown(text) {
+    const lines = escapeHtml(String(text || "")).split(/\r?\n/);
+    let html = "";
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+      const h = line.match(/^(#{1,6})\s+(.*)$/);
+      if (h) {
+        const lvl = Math.min(h[1].length + 2, 5);
+        html += `<h${lvl}>${inlineMd(h[2])}</h${lvl}>`;
+        i++;
+        continue;
+      }
+      if (/^\s*[-*]\s+/.test(line)) {
+        html += "<ul>";
+        while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) {
+          html += "<li>" + inlineMd(lines[i].replace(/^\s*[-*]\s+/, "")) + "</li>";
+          i++;
+        }
+        html += "</ul>";
+        continue;
+      }
+      if (/^\s*\d+\.\s+/.test(line)) {
+        html += "<ol>";
+        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+          html += "<li>" + inlineMd(lines[i].replace(/^\s*\d+\.\s+/, "")) + "</li>";
+          i++;
+        }
+        html += "</ol>";
+        continue;
+      }
+      if (/^\s*$/.test(line)) {
+        i++;
+        continue;
+      }
+      const para = [];
+      while (
+        i < lines.length &&
+        !/^\s*$/.test(lines[i]) &&
+        !/^\s*[-*]\s+/.test(lines[i]) &&
+        !/^\s*\d+\.\s+/.test(lines[i]) &&
+        !/^#{1,6}\s+/.test(lines[i])
+      ) {
+        para.push(inlineMd(lines[i]));
+        i++;
+      }
+      html += "<p>" + para.join("<br>") + "</p>";
+    }
+    return html;
+  }
+
   // Only onboarding "seen" flag stays local; everything else is server-side.
   const ONBOARD_KEY = "askadam.seenOnboarding.v2";
   let me = null; // current user
@@ -110,7 +172,9 @@
   function addBubble(text, cls) {
     const div = document.createElement("div");
     div.className = "bubble " + cls;
-    div.textContent = text;
+    // Adam's replies come back as Markdown — render them; keep user text plain.
+    if (cls.indexOf("adam") !== -1) div.innerHTML = renderMarkdown(text);
+    else div.textContent = text;
     chatLog.appendChild(div);
     chatLog.scrollTop = chatLog.scrollHeight;
     return div;
@@ -342,7 +406,57 @@
   let nameSaveTimer = null;
   function renderSettings() {
     document.getElementById("userName").value = me?.name || "";
+    loadRelationship();
   }
+
+  async function loadRelationship() {
+    const status = document.getElementById("plStatus");
+    const unlinkBtn = document.getElementById("plUnlink");
+    try {
+      const d = await (await api("/api/relationship")).json();
+      if (d.relationship) {
+        status.textContent = `Linked with ${d.relationship.partnerName || "your partner"}.`;
+        unlinkBtn.classList.remove("hidden");
+      } else {
+        status.textContent = "Not linked with a partner.";
+        unlinkBtn.classList.add("hidden");
+      }
+    } catch {}
+  }
+
+  document.getElementById("plInviteBtn").addEventListener("click", async () => {
+    const out = document.getElementById("plInviteOut");
+    try {
+      const d = await (await api("/api/relationship/invite", { method: "POST" })).json();
+      out.classList.remove("hidden");
+      out.innerHTML = `Share this code with your partner (valid 7 days):<br><span class="code">${d.code}</span>`;
+    } catch {
+      out.classList.remove("hidden");
+      out.textContent = "Couldn't create an invite. Try again.";
+    }
+  });
+
+  document.getElementById("plAcceptBtn").addEventListener("click", async () => {
+    const code = document.getElementById("plCode").value.trim();
+    const msg = document.getElementById("plMsg");
+    msg.classList.remove("hidden");
+    if (!code) { msg.textContent = "Enter an invite code."; return; }
+    const r = await api("/api/relationship/accept", { method: "POST", body: JSON.stringify({ code }) });
+    const d = await r.json().catch(() => ({}));
+    if (r.ok) {
+      msg.textContent = "Linked!";
+      document.getElementById("plCode").value = "";
+      loadRelationship();
+    } else {
+      msg.textContent = d.error || "Couldn't link with that code.";
+    }
+  });
+
+  document.getElementById("plUnlink").addEventListener("click", async () => {
+    if (!confirm("Unlink from your partner?")) return;
+    await api("/api/relationship/unlink", { method: "POST" });
+    loadRelationship();
+  });
   document.getElementById("userName").addEventListener("input", (e) => {
     const name = e.target.value.trim();
     if (me) me.name = name;

@@ -107,6 +107,16 @@ html, body {
 .bubble { max-width: 80%; padding: 12px 15px; border-radius: 16px; line-height: 1.45; font-size: 15px; white-space: pre-wrap; word-wrap: break-word; }
 .bubble.user { align-self: flex-end; background: linear-gradient(145deg, var(--accent), var(--accent-2)); color: #06201d; border-bottom-right-radius: 5px; }
 .bubble.adam { align-self: flex-start; background: var(--card); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+/* Formatted (Markdown) content inside Adam's replies */
+.bubble.adam p { margin: 0 0 10px; }
+.bubble.adam p:last-child { margin-bottom: 0; }
+.bubble.adam strong { color: #fff; font-weight: 700; }
+.bubble.adam em { font-style: italic; color: #d7ecea; }
+.bubble.adam h3, .bubble.adam h4, .bubble.adam h5 { margin: 12px 0 6px; font-size: 16px; color: var(--accent-2); }
+.bubble.adam ul, .bubble.adam ol { margin: 6px 0 10px; padding-left: 20px; }
+.bubble.adam li { margin: 4px 0; }
+.bubble.adam code { background: rgba(255,255,255,0.08); padding: 1px 5px; border-radius: 5px; font-size: 13.5px; }
+.bubble.adam a { color: var(--accent-2); }
 .bubble.error { align-self: center; background: transparent; color: var(--danger); border: 1px dashed var(--danger); font-size: 13px; text-align: center; }
 .typing { display: inline-flex; gap: 4px; }
 .typing span { width: 7px; height: 7px; background: var(--muted); border-radius: 50%; animation: blink 1.2s infinite; }
@@ -177,5 +187,11 @@ html, body {
 .divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--line); }
 .auth-error { color: var(--danger); }
 .settings-block.danger { color: var(--danger); }
+
+/* Partner link card */
+.link-card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 16px; margin-bottom: 12px; }
+.link-title { font-weight: 600; margin-bottom: 8px; }
+.link-card .row { margin-top: 6px; }
+.link-card .code { font-family: monospace; font-size: 18px; letter-spacing: 2px; color: var(--accent-2); }
 
 .hidden { display: none !important; }
