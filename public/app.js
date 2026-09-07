@@ -489,9 +489,16 @@
         Paddle.Initialize({
           token: billing.clientToken,
           eventCallback: (e) => {
-            if (e && e.name === "checkout.completed") {
+            if (!e) return;
+            if (e.name === "checkout.completed") {
               // The webhook flips entitlement server-side; refresh shortly after.
               setTimeout(refreshMe, 2500);
+            }
+            if (e.name === "checkout.error" || e.name === "checkout.warning") {
+              console.error("Paddle checkout event:", e);
+              const note = document.getElementById("billingNote");
+              const reason = e.error?.detail || e.error?.message || e.detail || (e.data && JSON.stringify(e.data)) || "unknown";
+              if (note) note.textContent = "Checkout error: " + reason;
             }
           },
         });
