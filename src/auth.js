@@ -1,134 +1,74 @@
-// Authentication: Passport (Google + Facebook OAuth) + a gated dev login.
-import passport from "passport";
-import { Strategy as GoogleStrategy } from "passport-google-oauth20";
-import { Strategy as FacebookStrategy } from "passport-facebook";
+// Authentication via Auth0 (express-openid-connect).
+// Auth0 handles Google, Facebook, Apple, email/password, etc. as "Connections"
+// configured in the Auth0 dashboard — the app code stays the same per provider.
+import { auth } from "express-openid-connect";
 
-const APP_URL = process.env.APP_URL || "http://localhost:3000";
+// In-process cache mapping Auth0 `sub` -> our database user, to avoid a DB lookup
+// on every request. Cleared on account deletion.
+const userCache = new Map();
+
+export function clearUserCache(sub) {
+  if (sub) userCache.delete(sub);
+}
 
 export function authConfig() {
   return {
-    google: Boolean(process.env.GOOGLE_CLIENT_ID && process.env.GOOGLE_CLIENT_SECRET),
-    facebook: Boolean(process.env.FACEBOOK_CLIENT_ID && process.env.FACEBOOK_CLIENT_SECRET),
-    devLogin:
-      process.env.ALLOW_DEV_LOGIN === "true" || process.env.NODE_ENV !== "production",
+    auth0: Boolean(process.env.CLIENT_ID && process.env.ISSUER_BASE_URL),
   };
 }
 
 export function configureAuth(app, store) {
-  const cfg = authConfig();
+  if (!authConfig().auth0) {
+    console.warn(
+      "Auth0 not configured — set ISSUER_BASE_URL, CLIENT_ID, SECRET, BASE_URL. Auth endpoints will 401."
+    );
+    return;
+  }
 
-  passport.serializeUser((user, done) => done(null, user.id));
-  passport.deserializeUser(async (id, done) => {
+  // Mounts /login, /logout, and /callback automatically.
+  app.use(
+    auth({
+      authRequired: false, // API + static assets are public; requireAuth guards per-user routes
+      auth0Logout: true, // log out of Auth0 too, not just the local session
+      baseURL: process.env.BASE_URL,
+      issuerBaseURL: process.env.ISSUER_BASE_URL,
+      clientID: process.env.CLIENT_ID,
+      secret: process.env.SECRET,
+      routes: { login: "/login", logout: "/logout", postLogoutRedirect: "/" },
+      authorizationParams: {
+        response_type: "id_token",
+        response_mode: "form_post",
+        scope: "openid profile email",
+      },
+    })
+  );
+
+  // Resolve the Auth0 identity to our database user and attach it as req.appUser.
+  app.use(async (req, res, next) => {
     try {
-      done(null, await store.getUserById(id));
-    } catch (err) {
-      done(err);
+      if (req.oidc?.isAuthenticated() && req.oidc.user?.sub) {
+        const sub = req.oidc.user.sub;
+        let u = userCache.get(sub);
+        if (!u) {
+          u = await store.findOrCreateUser({
+            provider: "auth0",
+            providerId: sub,
+            email: req.oidc.user.email,
+            name: req.oidc.user.name || req.oidc.user.nickname || req.oidc.user.email,
+            avatarUrl: req.oidc.user.picture,
+          });
+          userCache.set(sub, u);
+        }
+        req.appUser = u;
+      }
+    } catch (e) {
+      console.error("user resolve error:", e.message);
     }
-  });
-
-  // ---- Google ----
-  if (cfg.google) {
-    passport.use(
-      new GoogleStrategy(
-        {
-          clientID: process.env.GOOGLE_CLIENT_ID,
-          clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-          callbackURL: `${APP_URL}/auth/google/callback`,
-        },
-        async (accessToken, refreshToken, profile, done) => {
-          try {
-            const user = await store.findOrCreateUser({
-              provider: "google",
-              providerId: profile.id,
-              email: profile.emails?.[0]?.value,
-              name: profile.displayName,
-              avatarUrl: profile.photos?.[0]?.value,
-            });
-            done(null, user);
-          } catch (err) {
-            done(err);
-          }
-        }
-      )
-    );
-    app.get("/auth/google", passport.authenticate("google", { scope: ["profile", "email"] }));
-    app.get(
-      "/auth/google/callback",
-      passport.authenticate("google", { failureRedirect: "/?authError=google" }),
-      (req, res) => res.redirect("/")
-    );
-  }
-
-  // ---- Facebook ----
-  if (cfg.facebook) {
-    passport.use(
-      new FacebookStrategy(
-        {
-          clientID: process.env.FACEBOOK_CLIENT_ID,
-          clientSecret: process.env.FACEBOOK_CLIENT_SECRET,
-          callbackURL: `${APP_URL}/auth/facebook/callback`,
-          profileFields: ["id", "displayName", "emails", "photos"],
-        },
-        async (accessToken, refreshToken, profile, done) => {
-          try {
-            const user = await store.findOrCreateUser({
-              provider: "facebook",
-              providerId: profile.id,
-              email: profile.emails?.[0]?.value,
-              name: profile.displayName,
-              avatarUrl: profile.photos?.[0]?.value,
-            });
-            done(null, user);
-          } catch (err) {
-            done(err);
-          }
-        }
-      )
-    );
-    app.get("/auth/facebook", passport.authenticate("facebook", { scope: ["email"] }));
-    app.get(
-      "/auth/facebook/callback",
-      passport.authenticate("facebook", { failureRedirect: "/?authError=facebook" }),
-      (req, res) => res.redirect("/")
-    );
-  }
-
-  // ---- Dev login (testing only) ----
-  if (cfg.devLogin) {
-    app.post("/auth/dev", async (req, res, next) => {
-      const email = String(req.body?.email || "").trim().toLowerCase();
-      if (!email || !email.includes("@")) {
-        return res.status(400).json({ error: "Please provide a valid email." });
-      }
-      try {
-        const name = req.body?.name?.trim() || email.split("@")[0];
-        const user = await store.findOrCreateUser({
-          provider: "dev",
-          providerId: email,
-          email,
-          name,
-          avatarUrl: null,
-        });
-        req.login(user, (err) => (err ? next(err) : res.json({ ok: true })));
-      } catch (err) {
-        next(err);
-      }
-    });
-  }
-
-  // ---- Logout ----
-  app.post("/auth/logout", (req, res, next) => {
-    req.logout((err) => {
-      if (err) return next(err);
-      req.session.destroy(() => {
-        res.clearCookie("connect.sid");
-        res.json({ ok: true });
-      });
-    });
+    next();
   });
 }
 
 export function requireAuth(req, res, next) {
-  if (req.isAuthenticated && req.isAuthenticated()) return next();
+  if (req.appUser) return next();
   res.status(401).json({ error: "Not authenticated" });
 }

@@ -38,26 +38,12 @@
   // ---------- Boot ----------
   boot();
   async function boot() {
-    // Fetch which login options are available.
     try {
       const cfg = await (await api("/api/config")).json();
       freeLimit = cfg.freeLimit || 5;
-      const p = cfg.providers || {};
-      document.getElementById("btnGoogle").classList.toggle("hidden", !p.google);
-      document.getElementById("btnFacebook").classList.toggle("hidden", !p.facebook);
-      document.getElementById("devLogin").classList.toggle("hidden", !p.devLogin);
     } catch {}
 
-    // Surface OAuth failures passed back as ?authError=
-    const params = new URLSearchParams(location.search);
-    if (params.get("authError")) {
-      const box = document.getElementById("authError");
-      box.textContent = "That login didn't complete. Please try again.";
-      box.classList.remove("hidden");
-      history.replaceState({}, "", location.pathname);
-    }
-
-    // Check session.
+    // Check session (Auth0-backed).
     const r = await api("/api/me");
     if (r.ok) {
       const data = await r.json();
@@ -100,23 +86,6 @@
       slides.forEach((s, i) => s.classList.toggle("hidden", i !== slide));
       dots.forEach((d, i) => d.classList.toggle("active", i === slide));
       nextBtn.textContent = slide === slides.length - 1 ? "Enter Ask Adam" : "Next";
-    });
-  }
-
-  // ---------- Dev login ----------
-  const devBtn = document.getElementById("devLoginBtn");
-  if (devBtn) {
-    devBtn.addEventListener("click", async () => {
-      const email = document.getElementById("devEmail").value.trim();
-      const box = document.getElementById("authError");
-      const r = await api("/auth/dev", { method: "POST", body: JSON.stringify({ email }) });
-      if (r.ok) {
-        location.reload();
-      } else {
-        const d = await r.json().catch(() => ({}));
-        box.textContent = d.error || "Login failed.";
-        box.classList.remove("hidden");
-      }
     });
   }
 
@@ -373,14 +342,13 @@
       api("/api/me", { method: "PATCH", body: JSON.stringify({ name }) }).catch(() => {});
     }, 500);
   });
-  document.getElementById("logoutBtn").addEventListener("click", async () => {
-    await api("/auth/logout", { method: "POST" });
-    location.reload();
+  document.getElementById("logoutBtn").addEventListener("click", () => {
+    window.location.href = "/logout";
   });
   document.getElementById("deleteBtn").addEventListener("click", async () => {
     if (!confirm("Permanently delete your account and all your data? This cannot be undone.")) return;
     await api("/api/me", { method: "DELETE" });
-    location.reload();
+    window.location.href = "/logout"; // ends the Auth0 session after deletion
   });
   const upgrade = document.getElementById("upgradeBtn");
   if (upgrade) upgrade.addEventListener("click", () => alert("Payments aren't enabled yet in this version."));

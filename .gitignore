@@ -3,3 +3,8 @@ node_modules/
 .env.local
 *.log
 .DS_Store
+
+# Auth0 credentials
+.auth0-mcp-state.json
+
+.auth0-mcp-writes.log
