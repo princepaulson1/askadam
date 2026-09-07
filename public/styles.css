@@ -60,6 +60,10 @@ html, body {
 }
 .logo-mark.small { width: 60px; height: 60px; font-size: 30px; border-radius: 18px; }
 
+/* Brand logo image */
+.logo-img { width: 128px; height: 128px; object-fit: contain; }
+.logo-img.small { width: 84px; height: 84px; }
+
 /* Splash */
 .splash { background: radial-gradient(1200px 600px at 50% -10%, #16403f, var(--bg)); }
 .splash-inner { display: flex; flex-direction: column; align-items: center; justify-content: center; flex: 1; gap: 12px; }
