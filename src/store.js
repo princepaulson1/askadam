@@ -64,12 +64,30 @@ class PostgresStore {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
         UNIQUE (user_id, text)
       );
-      CREATE TABLE IF NOT EXISTS cycle_settings (
-        user_id      INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
-        last_period  DATE,
-        cycle_length INTEGER,
-        updated_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+      CREATE TABLE IF NOT EXISTS partners (
+        id                SERIAL PRIMARY KEY,
+        owner_user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        display_name      TEXT,
+        birthday          DATE,
+        notes             TEXT,
+        cycle_last_period DATE,
+        cycle_length      INTEGER,
+        is_primary        BOOLEAN NOT NULL DEFAULT true,
+        created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
       );
+      CREATE INDEX IF NOT EXISTS idx_partners_owner ON partners(owner_user_id);
+      -- One-time migration: carry over any cycle data from the old table if it exists.
+      DO $$
+      BEGIN
+        IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = 'cycle_settings') THEN
+          INSERT INTO partners (owner_user_id, cycle_last_period, cycle_length)
+          SELECT cs.user_id, cs.last_period, cs.cycle_length
+          FROM cycle_settings cs
+          WHERE NOT EXISTS (SELECT 1 FROM partners p WHERE p.owner_user_id = cs.user_id);
+          DROP TABLE cycle_settings;
+        END IF;
+      END $$;
       CREATE TABLE IF NOT EXISTS active_days (
         user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
         day     DATE NOT NULL,
@@ -161,29 +179,77 @@ class PostgresStore {
     );
   }
 
-  async getCycle(userId) {
+  // ---- Partners (a partner profile owned by the user; "her") ----
+  async getPrimaryPartner(userId) {
     const { rows } = await this.pool.query(
-      `SELECT last_period, cycle_length FROM cycle_settings WHERE user_id = $1`,
+      `SELECT * FROM partners WHERE owner_user_id = $1 ORDER BY is_primary DESC, id ASC LIMIT 1`,
       [userId]
     );
-    if (!rows[0]) return null;
+    return rows[0] || null;
+  }
+
+  async ensurePrimaryPartner(userId) {
+    const existing = await this.getPrimaryPartner(userId);
+    if (existing) return existing;
+    const { rows } = await this.pool.query(
+      `INSERT INTO partners (owner_user_id, is_primary) VALUES ($1, true) RETURNING *`,
+      [userId]
+    );
+    return rows[0];
+  }
+
+  async updatePartner(userId, { displayName, birthday, notes }) {
+    const p = await this.ensurePrimaryPartner(userId);
+    const { rows } = await this.pool.query(
+      `UPDATE partners
+         SET display_name = COALESCE($2, display_name),
+             birthday     = COALESCE($3, birthday),
+             notes        = COALESCE($4, notes),
+             updated_at   = now()
+       WHERE id = $1 RETURNING *`,
+      [p.id, displayName ?? null, birthday ?? null, notes ?? null]
+    );
+    return rows[0];
+  }
+
+  getPartnerView(p) {
+    if (!p) return null;
     return {
-      lastPeriod: rows[0].last_period
-        ? new Date(rows[0].last_period).toISOString().slice(0, 10)
+      id: p.id,
+      displayName: p.display_name,
+      birthday: p.birthday ? new Date(p.birthday).toISOString().slice(0, 10) : null,
+      cycle:
+        p.cycle_last_period || p.cycle_length
+          ? {
+              lastPeriod: p.cycle_last_period
+                ? new Date(p.cycle_last_period).toISOString().slice(0, 10)
+                : null,
+              cycleLength: p.cycle_length,
+            }
+          : null,
+    };
+  }
+
+  async getPartner(userId) {
+    return this.getPartnerView(await this.getPrimaryPartner(userId));
+  }
+
+  async getCycle(userId) {
+    const p = await this.getPrimaryPartner(userId);
+    if (!p || (!p.cycle_last_period && !p.cycle_length)) return null;
+    return {
+      lastPeriod: p.cycle_last_period
+        ? new Date(p.cycle_last_period).toISOString().slice(0, 10)
         : null,
-      cycleLength: rows[0].cycle_length,
+      cycleLength: p.cycle_length,
     };
   }
 
   async setCycle(userId, lastPeriod, cycleLength) {
+    const p = await this.ensurePrimaryPartner(userId);
     await this.pool.query(
-      `INSERT INTO cycle_settings (user_id, last_period, cycle_length, updated_at)
-       VALUES ($1,$2,$3, now())
-       ON CONFLICT (user_id) DO UPDATE
-         SET last_period = EXCLUDED.last_period,
-             cycle_length = EXCLUDED.cycle_length,
-             updated_at = now()`,
-      [userId, lastPeriod, cycleLength]
+      `UPDATE partners SET cycle_last_period = $2, cycle_length = $3, updated_at = now() WHERE id = $1`,
+      [p.id, lastPeriod, cycleLength]
     );
   }
 
@@ -232,7 +298,7 @@ class MemoryStore {
     this.usage = new Map(); // `${userId}:${day}` -> count
     this.messages = new Map(); // userId -> [{role, content}]
     this.saved = new Map(); // userId -> Set(text)
-    this.cycle = new Map(); // userId -> {lastPeriod, cycleLength}
+    this.partners = new Map(); // userId -> partner object (primary)
     this.activeDays = new Map(); // userId -> Set(day)
   }
 
@@ -264,7 +330,7 @@ class MemoryStore {
     this.users.delete(id);
     this.messages.delete(id);
     this.saved.delete(id);
-    this.cycle.delete(id);
+    this.partners.delete(id);
     this.activeDays.delete(id);
     for (const k of [...this.usage.keys()]) if (k.startsWith(id + ":")) this.usage.delete(k);
   }
@@ -293,9 +359,30 @@ class MemoryStore {
   }
   async removeSavedWisdom(userId, text) { this.saved.get(userId)?.delete(text); }
 
-  async getCycle(userId) { return this.cycle.get(userId) || null; }
+  // ---- Partners ----
+  ensurePartner(userId) {
+    let p = this.partners.get(Number(userId));
+    if (!p) {
+      p = { id: Number(userId), displayName: null, birthday: null, notes: null, cycle: null };
+      this.partners.set(Number(userId), p);
+    }
+    return p;
+  }
+  async getPartner(userId) {
+    const p = this.partners.get(Number(userId));
+    return p ? { id: p.id, displayName: p.displayName, birthday: p.birthday, cycle: p.cycle } : null;
+  }
+  async updatePartner(userId, { displayName, birthday, notes }) {
+    const p = this.ensurePartner(userId);
+    if (displayName !== undefined && displayName !== null) p.displayName = displayName;
+    if (birthday !== undefined && birthday !== null) p.birthday = birthday;
+    if (notes !== undefined && notes !== null) p.notes = notes;
+    return p;
+  }
+  async getCycle(userId) { return this.partners.get(Number(userId))?.cycle || null; }
   async setCycle(userId, lastPeriod, cycleLength) {
-    this.cycle.set(userId, { lastPeriod, cycleLength });
+    const p = this.ensurePartner(userId);
+    p.cycle = { lastPeriod, cycleLength };
   }
 
   async trackActiveDay(userId, day) {

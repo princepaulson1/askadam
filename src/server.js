@@ -141,7 +141,18 @@ app.delete("/api/saved-wisdom", requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 
-// ---- Cycle settings ----
+// ---- Partner profile ("her") ----
+app.get("/api/partner", requireAuth, async (req, res) => {
+  res.json({ partner: await store.getPartner(req.appUser.id) });
+});
+app.post("/api/partner", requireAuth, async (req, res) => {
+  const displayName = req.body?.displayName != null ? String(req.body.displayName).trim().slice(0, 80) : null;
+  const birthday = req.body?.birthday || null;
+  const partner = await store.updatePartner(req.appUser.id, { displayName, birthday });
+  res.json({ ok: true, partner: store.getPartnerView ? store.getPartnerView(partner) : partner });
+});
+
+// ---- Cycle settings (stored on the partner profile) ----
 app.get("/api/cycle", requireAuth, async (req, res) => {
   res.json({ cycle: await store.getCycle(req.appUser.id) });
 });

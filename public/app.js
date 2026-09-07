@@ -180,16 +180,22 @@
   const PHASES = {};
   api("/api/cycle-advice").then((r) => r.json()).then((d) => Object.assign(PHASES, d.phases || {})).catch(() => {});
   let cycleLoaded = false;
+  let partnerName = "";
 
   async function loadCycle() {
     if (cycleLoaded) return;
     cycleLoaded = true;
     try {
-      const d = await (await api("/api/cycle")).json();
-      if (d.cycle) {
-        if (d.cycle.lastPeriod) document.getElementById("lastPeriod").value = d.cycle.lastPeriod;
-        if (d.cycle.cycleLength) document.getElementById("cycleLen").value = d.cycle.cycleLength;
-        computeAndRender(); // show saved result immediately
+      const d = await (await api("/api/partner")).json();
+      const p = d.partner;
+      if (p) {
+        if (p.displayName) {
+          document.getElementById("partnerName").value = p.displayName;
+          partnerName = p.displayName;
+        }
+        if (p.cycle?.lastPeriod) document.getElementById("lastPeriod").value = p.cycle.lastPeriod;
+        if (p.cycle?.cycleLength) document.getElementById("cycleLen").value = p.cycle.cycleLength;
+        if (p.cycle) computeAndRender(); // show saved result immediately
       }
     } catch {}
   }
@@ -197,6 +203,7 @@
   document.getElementById("calcCycle").addEventListener("click", async () => {
     const dateVal = document.getElementById("lastPeriod").value;
     const len = parseInt(document.getElementById("cycleLen").value, 10) || 28;
+    partnerName = document.getElementById("partnerName").value.trim();
     if (!dateVal) {
       const box = document.getElementById("cycleResult");
       box.classList.remove("hidden");
@@ -204,7 +211,8 @@
       return;
     }
     computeAndRender();
-    // Persist settings (also counts as advice read).
+    // Persist the partner name and cycle settings (also counts as advice read).
+    api("/api/partner", { method: "POST", body: JSON.stringify({ displayName: partnerName }) }).catch(() => {});
     api("/api/cycle", { method: "POST", body: JSON.stringify({ lastPeriod: dateVal, cycleLength: len }) }).catch(() => {});
   });
 
@@ -225,7 +233,7 @@
         <div class="phase-name">${res.phase} Phase</div>
         <div class="phase-meta">Cycle day ${res.dayOfCycle} of ${res.cycleLength} · ${info.range}</div>
         <p>${info.summary}</p>
-        <div class="advice-title">How to support her</div>
+        <div class="advice-title">How to support ${partnerName || "her"}</div>
         <ul class="bullets">${(info.advice || []).map((a) => `<li>${a}</li>`).join("")}</ul>
       </div>`;
   }
