@@ -115,11 +115,11 @@ async function storeMemories(userId, userMsg, reply, userEmbedding) {
 }
 
 // Phase 21: every few turns, distill durable facts + a session summary in the background.
-async function maybeExtractInsights(userId) {
+async function maybeExtractInsights(userId, conversationId) {
   try {
     const n = await store.countUserMessages(userId);
     if (!n || n % 5 !== 0) return; // run on every 5th user message
-    const msgs = await store.getRecentMessages(userId, 12);
+    const msgs = await store.getRecentConversationMessages(conversationId, 12);
     const { facts, summary } = await extractInsights(msgs);
 
     if (summary && embeddingsConfigured() && store.vectorEnabled) {
@@ -183,15 +183,59 @@ app.get("/api/stats", requireAuth, async (req, res) => {
   res.json(await store.getStats(req.appUser.id));
 });
 
-// ---- Chat ----
-app.get("/api/history", requireAuth, async (req, res) => {
-  res.json({ messages: await store.getRecentMessages(req.appUser.id, 100) });
+// ---- Conversations ----
+async function ownedConversation(req, res) {
+  const id = Number(req.params.id);
+  const conv = await store.getConversation(id);
+  if (!conv || conv.user_id !== req.appUser.id) {
+    res.status(404).json({ error: "Conversation not found" });
+    return null;
+  }
+  return conv;
+}
+
+app.get("/api/conversations", requireAuth, async (req, res) => {
+  res.json({ conversations: await store.listConversations(req.appUser.id) });
+});
+app.post("/api/conversations", requireAuth, async (req, res) => {
+  const conv = await store.createConversation(req.appUser.id, null);
+  res.json({ conversation: { id: conv.id, title: conv.title, updated_at: conv.updated_at } });
+});
+app.get("/api/conversations/:id/messages", requireAuth, async (req, res) => {
+  const conv = await ownedConversation(req, res);
+  if (!conv) return;
+  res.json({ messages: await store.getConversationMessages(conv.id) });
+});
+app.patch("/api/conversations/:id", requireAuth, async (req, res) => {
+  const conv = await ownedConversation(req, res);
+  if (!conv) return;
+  await store.renameConversation(conv.id, String(req.body?.title || "").slice(0, 80));
+  res.json({ ok: true });
+});
+app.delete("/api/conversations/:id", requireAuth, async (req, res) => {
+  const conv = await ownedConversation(req, res);
+  if (!conv) return;
+  await store.deleteConversation(conv.id);
+  res.json({ ok: true });
 });
 
+// ---- Chat ----
 app.post("/api/chat", requireAuth, async (req, res) => {
   const userId = req.appUser.id;
   const message = String(req.body?.message || "").trim();
   if (!message) return res.status(400).json({ error: "Message is required." });
+
+  // Resolve the conversation (create one if none supplied).
+  let conversationId = Number(req.body?.conversationId) || null;
+  if (conversationId) {
+    const conv = await store.getConversation(conversationId);
+    if (!conv || conv.user_id !== userId) conversationId = null;
+  }
+  let createdConversation = null;
+  if (!conversationId) {
+    createdConversation = await store.createConversation(userId, null);
+    conversationId = createdConversation.id;
+  }
 
   const premium = await store.isPremium(userId);
   // Per-user freemium limit (premium users are unlimited).
@@ -201,25 +245,31 @@ app.post("/api/chat", requireAuth, async (req, res) => {
       return res.status(429).json({
         limitReached: true,
         remaining: 0,
+        conversationId,
         message: `You've reached today's free limit of ${FREE_DAILY_LIMIT} questions. Upgrade to Premium for unlimited access to Adam.`,
       });
     }
   }
 
-  await store.addMessage(userId, "user", message);
+  await store.addMessage(userId, conversationId, "user", message);
+  // Title a fresh conversation from its first message.
+  if (createdConversation) {
+    const title = message.length > 42 ? message.slice(0, 42).trim() + "…" : message;
+    await store.renameConversation(conversationId, title);
+  }
   const count = premium ? 0 : await store.incrementUsage(userId, today());
   const remaining = premium ? null : Math.max(0, FREE_DAILY_LIMIT - count);
 
   try {
-    const history = await store.getRecentMessages(userId, 10);
+    const history = await store.getRecentConversationMessages(conversationId, 10);
     const { context, queryEmbedding } = await buildUserContext(userId, message);
     const { reply, degraded } = await generateReply(history, context);
-    await store.addMessage(userId, "assistant", reply);
-    res.json({ reply, degraded, remaining });
+    await store.addMessage(userId, conversationId, "assistant", reply);
+    res.json({ reply, degraded, remaining, conversationId });
     // Save this exchange to long-term memory, then occasionally distill facts — all in
     // the background so the response isn't delayed.
     storeMemories(userId, message, reply, queryEmbedding)
-      .then(() => maybeExtractInsights(userId))
+      .then(() => maybeExtractInsights(userId, conversationId))
       .catch(() => {});
   } catch (err) {
     console.error("AI error:", err.status || "", err.detail || err.message || err);
@@ -344,6 +394,27 @@ app.get("/api/billing/status", requireAuth, async (req, res) => {
     plan: ent?.plan || null,
     currentPeriodEnd: ent?.current_period_end || ent?.currentPeriodEnd || null,
   });
+});
+
+// Open the Paddle customer portal (manage/cancel/update card).
+const paddleApiBase = () => (PADDLE.environment === "live" ? "https://api.paddle.com" : "https://sandbox-api.paddle.com");
+app.post("/api/billing/portal", requireAuth, async (req, res) => {
+  const ent = await store.getEntitlement(req.appUser.id);
+  const customerId = ent?.provider_customer_id || ent?.customerId;
+  if (!customerId || !PADDLE.apiKey) return res.status(400).json({ error: "No subscription to manage yet." });
+  try {
+    const r = await fetch(`${paddleApiBase()}/customers/${customerId}/portal-sessions`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${PADDLE.apiKey}`, "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    const d = await r.json();
+    const url = d?.data?.urls?.general?.overview;
+    if (!url) return res.status(502).json({ error: "Couldn't open the portal." });
+    res.json({ url });
+  } catch {
+    res.status(502).json({ error: "Couldn't open the portal." });
+  }
 });
 
 // Paddle webhook: source of truth for entitlement changes. Verifies the signature

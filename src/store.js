@@ -70,6 +70,16 @@ class PostgresStore {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
       CREATE INDEX IF NOT EXISTS idx_chat_user ON chat_messages(user_id, id);
+      CREATE TABLE IF NOT EXISTS conversations (
+        id         SERIAL PRIMARY KEY,
+        user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        title      TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS conversation_id INTEGER REFERENCES conversations(id) ON DELETE CASCADE;
+      CREATE INDEX IF NOT EXISTS idx_conv_user ON conversations(user_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_msg_conv ON chat_messages(conversation_id, id);
       CREATE TABLE IF NOT EXISTS saved_wisdom (
         id         SERIAL PRIMARY KEY,
         user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -241,17 +251,50 @@ class PostgresStore {
     return rows[0].count;
   }
 
-  async addMessage(userId, role, content) {
+  async addMessage(userId, conversationId, role, content) {
     await this.pool.query(
-      `INSERT INTO chat_messages (user_id, role, content) VALUES ($1,$2,$3)`,
-      [userId, role, content]
+      `INSERT INTO chat_messages (user_id, conversation_id, role, content) VALUES ($1,$2,$3,$4)`,
+      [userId, conversationId, role, content]
     );
+    if (conversationId) await this.pool.query(`UPDATE conversations SET updated_at = now() WHERE id = $1`, [conversationId]);
   }
 
-  async getRecentMessages(userId, limit = 50) {
+  // ---- Conversations ----
+  async createConversation(userId, title = null) {
     const { rows } = await this.pool.query(
-      `SELECT role, content FROM chat_messages WHERE user_id = $1 ORDER BY id DESC LIMIT $2`,
-      [userId, limit]
+      `INSERT INTO conversations (user_id, title) VALUES ($1,$2) RETURNING id, title, created_at, updated_at`,
+      [userId, title]
+    );
+    return rows[0];
+  }
+  async listConversations(userId) {
+    const { rows } = await this.pool.query(
+      `SELECT id, title, updated_at FROM conversations WHERE user_id = $1 ORDER BY updated_at DESC LIMIT 100`,
+      [userId]
+    );
+    return rows;
+  }
+  async getConversation(id) {
+    const { rows } = await this.pool.query(`SELECT * FROM conversations WHERE id = $1`, [id]);
+    return rows[0] || null;
+  }
+  async renameConversation(id, title) {
+    await this.pool.query(`UPDATE conversations SET title = $2, updated_at = now() WHERE id = $1`, [id, title]);
+  }
+  async deleteConversation(id) {
+    await this.pool.query(`DELETE FROM conversations WHERE id = $1`, [id]);
+  }
+  async getConversationMessages(conversationId, limit = 300) {
+    const { rows } = await this.pool.query(
+      `SELECT role, content FROM chat_messages WHERE conversation_id = $1 ORDER BY id ASC LIMIT $2`,
+      [conversationId, limit]
+    );
+    return rows;
+  }
+  async getRecentConversationMessages(conversationId, limit = 10) {
+    const { rows } = await this.pool.query(
+      `SELECT role, content FROM chat_messages WHERE conversation_id = $1 ORDER BY id DESC LIMIT $2`,
+      [conversationId, limit]
     );
     return rows.reverse();
   }
@@ -547,7 +590,9 @@ class MemoryStore {
     this.byProvider = new Map(); // `${provider}:${providerId}` -> id
     this.seq = 1;
     this.usage = new Map(); // `${userId}:${day}` -> count
-    this.messages = new Map(); // userId -> [{role, content}]
+    this.messages = new Map(); // conversationId -> [{role, content}]
+    this.conversations = new Map(); // conversationId -> {id, user_id, title, created_at, updated_at}
+    this.convSeq = 1;
     this.saved = new Map(); // userId -> Set(text)
     this.partners = new Map(); // userId -> partner object (primary)
     this.activeDays = new Map(); // userId -> Set(day)
@@ -587,7 +632,9 @@ class MemoryStore {
     const u = this.users.get(id);
     if (u) this.byProvider.delete(`${u.provider}:${u.provider_id}`);
     this.users.delete(id);
-    this.messages.delete(id);
+    for (const [cid, c] of [...this.conversations]) {
+      if (c.user_id === id) { this.conversations.delete(cid); this.messages.delete(cid); }
+    }
     this.saved.delete(id);
     this.partners.delete(id);
     this.activeDays.delete(id);
@@ -609,16 +656,53 @@ class MemoryStore {
     return n;
   }
 
-  async addMessage(userId, role, content) {
-    if (!this.messages.has(userId)) this.messages.set(userId, []);
-    this.messages.get(userId).push({ role, content });
-  }
-  async getRecentMessages(userId, limit = 50) {
-    const all = this.messages.get(userId) || [];
-    return all.slice(-limit);
+  async addMessage(userId, conversationId, role, content) {
+    const key = Number(conversationId);
+    if (!this.messages.has(key)) this.messages.set(key, []);
+    this.messages.get(key).push({ role, content, user_id: Number(userId) });
+    const c = this.conversations.get(key);
+    if (c) c.updated_at = new Date().toISOString();
   }
   async countUserMessages(userId) {
-    return (this.messages.get(userId) || []).filter((m) => m.role === "user").length;
+    userId = Number(userId);
+    let n = 0;
+    for (const c of this.conversations.values()) {
+      if (c.user_id === userId) n += (this.messages.get(c.id) || []).filter((m) => m.role === "user").length;
+    }
+    return n;
+  }
+
+  // ---- Conversations ----
+  async createConversation(userId, title = null) {
+    const id = this.convSeq++;
+    const now = new Date().toISOString();
+    const conv = { id, user_id: Number(userId), title, created_at: now, updated_at: now };
+    this.conversations.set(id, conv);
+    return conv;
+  }
+  async listConversations(userId) {
+    userId = Number(userId);
+    return [...this.conversations.values()]
+      .filter((c) => c.user_id === userId)
+      .sort((a, b) => (a.updated_at < b.updated_at ? 1 : -1))
+      .map((c) => ({ id: c.id, title: c.title, updated_at: c.updated_at }));
+  }
+  async getConversation(id) {
+    return this.conversations.get(Number(id)) || null;
+  }
+  async renameConversation(id, title) {
+    const c = this.conversations.get(Number(id));
+    if (c) { c.title = title; c.updated_at = new Date().toISOString(); }
+  }
+  async deleteConversation(id) {
+    this.conversations.delete(Number(id));
+    this.messages.delete(Number(id));
+  }
+  async getConversationMessages(conversationId, limit = 300) {
+    return (this.messages.get(Number(conversationId)) || []).slice(0, limit).map((m) => ({ role: m.role, content: m.content }));
+  }
+  async getRecentConversationMessages(conversationId, limit = 10) {
+    return (this.messages.get(Number(conversationId)) || []).slice(-limit).map((m) => ({ role: m.role, content: m.content }));
   }
 
   async getSavedWisdom(userId) { return [...(this.saved.get(userId) || [])].reverse(); }
@@ -665,10 +749,9 @@ class MemoryStore {
   }
 
   async getStats(userId) {
-    const msgs = this.messages.get(userId) || [];
     const u = this.users.get(Number(userId));
     return {
-      questionsAsked: msgs.filter((m) => m.role === "user").length,
+      questionsAsked: await this.countUserMessages(userId),
       adviceRead: u?.advice_read || 0,
       daysActive: (this.activeDays.get(userId) || new Set()).size,
       savedCount: (this.saved.get(userId) || new Set()).size,

@@ -81,6 +81,7 @@
     if (name === "chat") loadChat();
     if (name === "cycle") loadCycle();
     if (name === "settings") renderSettings();
+    if (name === "subscription") renderSubscription();
   }
 
   document.body.addEventListener("click", (e) => {
@@ -163,29 +164,54 @@
     document.getElementById("greeting").textContent = greetingText();
   }
 
-  // ---------- Chat ----------
+  // ---------- Chat (conversations, voice, ChatGPT-style) ----------
   const chatLog = document.getElementById("chatLog");
   const chatForm = document.getElementById("chatForm");
   const chatText = document.getElementById("chatText");
   const usagePill = document.getElementById("usagePill");
-  let chatLoaded = false;
+  const chatTitleEl = document.getElementById("chatTitle");
+  const convListEl = document.getElementById("convList");
+  const drawer = document.getElementById("chatDrawer");
+  const drawerOverlay = document.getElementById("drawerOverlay");
+  const scrollBottomBtn = document.getElementById("scrollBottomBtn");
+  let currentConversationId = null;
+  let conversations = [];
+  let chatWired = false;
+  let chatBusy = false;
+
+  function scrollToBottom() { chatLog.scrollTop = chatLog.scrollHeight; }
 
   function addBubble(text, cls) {
     const div = document.createElement("div");
     div.className = "bubble " + cls;
-    // Adam's replies come back as Markdown — render them; keep user text plain.
     if (cls.indexOf("adam") !== -1) div.innerHTML = renderMarkdown(text);
     else div.textContent = text;
     chatLog.appendChild(div);
-    chatLog.scrollTop = chatLog.scrollHeight;
+    if (cls === "adam") addMsgActions(text);
+    scrollToBottom();
     return div;
+  }
+  function addMsgActions(text) {
+    const row = document.createElement("div");
+    row.className = "msg-actions";
+    const copy = document.createElement("button");
+    copy.textContent = "Copy";
+    copy.addEventListener("click", () => {
+      navigator.clipboard?.writeText(text);
+      copy.textContent = "Copied"; setTimeout(() => (copy.textContent = "Copy"), 1500);
+    });
+    const speak = document.createElement("button");
+    speak.textContent = "🔊 Speak";
+    speak.addEventListener("click", () => speakText(text, speak));
+    row.appendChild(copy); row.appendChild(speak);
+    chatLog.appendChild(row);
   }
   function addTyping() {
     const div = document.createElement("div");
     div.className = "bubble adam";
     div.innerHTML = '<span class="typing"><span></span><span></span><span></span></span>';
     chatLog.appendChild(div);
-    chatLog.scrollTop = chatLog.scrollHeight;
+    scrollToBottom();
     return div;
   }
   function setUsage(remaining) {
@@ -193,20 +219,124 @@
     else usagePill.textContent = `${remaining}/${freeLimit} free`;
   }
 
-  async function loadChat() {
-    if (chatLoaded) return;
-    chatLoaded = true;
+  // ----- Voice output (read aloud) -----
+  let speaking = false;
+  function speakText(text, btn) {
+    if (!("speechSynthesis" in window)) { alert("Voice output isn't supported in this browser."); return; }
+    if (speaking) { speechSynthesis.cancel(); speaking = false; if (btn) btn.textContent = "🔊 Speak"; return; }
+    const clean = text.replace(/[#*`_>]/g, "").replace(/\n+/g, ". ");
+    const u = new SpeechSynthesisUtterance(clean);
+    u.rate = 1;
+    u.onend = () => { speaking = false; if (btn) btn.textContent = "🔊 Speak"; };
+    speaking = true; if (btn) btn.textContent = "⏹ Stop";
+    speechSynthesis.speak(u);
+  }
+
+  // ----- Voice input (dictation) -----
+  let recognizing = false;
+  let recog = null;
+  function setupMic() {
+    const micBtn = document.getElementById("micBtn");
+    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+    if (!SR) { micBtn.style.display = "none"; return; }
+    recog = new SR();
+    recog.lang = "en-US"; recog.interimResults = true; recog.continuous = false;
+    recog.onresult = (e) => {
+      let t = "";
+      for (let i = 0; i < e.results.length; i++) t += e.results[i][0].transcript;
+      chatText.value = t;
+    };
+    recog.onend = () => { recognizing = false; micBtn.classList.remove("recording"); };
+    recog.onerror = () => { recognizing = false; micBtn.classList.remove("recording"); };
+    micBtn.addEventListener("click", () => {
+      if (recognizing) { recog.stop(); return; }
+      try { recog.start(); recognizing = true; micBtn.classList.add("recording"); } catch {}
+    });
+  }
+
+  // ----- Conversation drawer -----
+  function openDrawer() { drawer.classList.remove("hidden"); drawerOverlay.classList.remove("hidden"); loadConversations(); }
+  function closeDrawer() { drawer.classList.add("hidden"); drawerOverlay.classList.add("hidden"); }
+
+  async function loadConversations() {
+    try {
+      const d = await (await api("/api/conversations")).json();
+      conversations = d.conversations || [];
+    } catch { conversations = []; }
+    renderConvList();
+  }
+  function renderConvList() {
+    convListEl.innerHTML = "";
+    if (!conversations.length) {
+      convListEl.innerHTML = '<p class="fineprint" style="padding:12px">No chats yet. Start one below.</p>';
+      return;
+    }
+    conversations.forEach((c) => {
+      const item = document.createElement("div");
+      item.className = "conv-item" + (c.id === currentConversationId ? " active" : "");
+      const name = document.createElement("span");
+      name.className = "conv-name";
+      name.textContent = c.title || "New chat";
+      name.addEventListener("click", () => { openConversation(c.id); closeDrawer(); });
+      const del = document.createElement("button");
+      del.className = "conv-del";
+      del.textContent = "🗑";
+      del.addEventListener("click", async (ev) => {
+        ev.stopPropagation();
+        if (!confirm("Delete this chat?")) return;
+        await api("/api/conversations/" + c.id, { method: "DELETE" });
+        if (c.id === currentConversationId) newChat();
+        loadConversations();
+      });
+      item.appendChild(name); item.appendChild(del);
+      convListEl.appendChild(item);
+    });
+  }
+
+  function greetingBubble() {
+    chatLog.innerHTML = "";
+    addBubble("Hey, I'm Adam. Ask me anything about relationships, communication, emotions, or intimacy. What's on your mind?", "adam");
+  }
+
+  async function openConversation(id) {
+    currentConversationId = id;
     chatLog.innerHTML = "";
     try {
-      const d = await (await api("/api/history")).json();
-      if (d.messages?.length) {
-        d.messages.forEach((m) => addBubble(m.content, m.role === "user" ? "user" : "adam"));
-      } else {
-        addBubble("Hey, I'm Adam. Ask me anything about relationships, communication, emotions, or intimacy. What's on your mind?", "adam");
-      }
-    } catch {
-      addBubble("Hey, I'm Adam. What's on your mind?", "adam");
+      const d = await (await api("/api/conversations/" + id + "/messages")).json();
+      if (d.messages?.length) d.messages.forEach((m) => addBubble(m.content, m.role === "user" ? "user" : "adam"));
+      else greetingBubble();
+    } catch { greetingBubble(); }
+    const c = conversations.find((x) => x.id === id);
+    chatTitleEl.textContent = c?.title || "Ask Adam";
+    scrollToBottom();
+  }
+
+  function newChat() {
+    currentConversationId = null;
+    chatTitleEl.textContent = "Ask Adam";
+    greetingBubble();
+    closeDrawer();
+    chatText.focus();
+  }
+
+  async function loadChat() {
+    if (!chatWired) {
+      chatWired = true;
+      setupMic();
+      document.getElementById("chatMenuBtn").addEventListener("click", openDrawer);
+      document.getElementById("drawerClose").addEventListener("click", closeDrawer);
+      drawerOverlay.addEventListener("click", closeDrawer);
+      document.getElementById("newChatBtn").addEventListener("click", newChat);
+      document.getElementById("drawerNewChat").addEventListener("click", newChat);
+      scrollBottomBtn.addEventListener("click", scrollToBottom);
+      chatLog.addEventListener("scroll", () => {
+        const nearBottom = chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 80;
+        scrollBottomBtn.classList.toggle("hidden", nearBottom);
+      });
     }
+    await loadConversations();
+    if (conversations.length) await openConversation(conversations[0].id);
+    else newChat();
     try {
       const me2 = await (await api("/api/me")).json();
       setUsage(me2.remaining);
@@ -216,12 +346,13 @@
   chatForm.addEventListener("submit", async (e) => {
     e.preventDefault();
     const text = chatText.value.trim();
-    if (!text) return;
+    if (!text || chatBusy) return;
+    chatBusy = true;
     chatText.value = "";
     addBubble(text, "user");
     const typing = addTyping();
     try {
-      const r = await api("/api/chat", { method: "POST", body: JSON.stringify({ message: text }) });
+      const r = await api("/api/chat", { method: "POST", body: JSON.stringify({ message: text, conversationId: currentConversationId }) });
       const d = await r.json();
       typing.remove();
       if (r.status === 429 || d.limitReached) {
@@ -230,14 +361,24 @@
         up.style.cursor = "pointer";
         up.addEventListener("click", () => show("subscription"));
         setUsage(0);
+        if (d.conversationId) currentConversationId = d.conversationId;
         return;
       }
       if (d.error) { addBubble(d.error, "error"); return; }
       addBubble(d.reply, "adam");
       setUsage(d.remaining);
+      const wasNew = !currentConversationId;
+      if (d.conversationId) currentConversationId = d.conversationId;
+      if (wasNew) {
+        await loadConversations();
+        const c = conversations.find((x) => x.id === currentConversationId);
+        chatTitleEl.textContent = c?.title || "Ask Adam";
+      }
     } catch {
       typing.remove();
       addBubble("Couldn't reach Adam. Check your connection and try again.", "error");
+    } finally {
+      chatBusy = false;
     }
   });
 
@@ -535,4 +676,44 @@
   const buyA = document.getElementById("buyAnnual");
   if (buyM) buyM.addEventListener("click", () => openCheckout(billing?.monthlyPriceId));
   if (buyA) buyA.addEventListener("click", () => openCheckout(billing?.annualPriceId));
+
+  async function renderSubscription() {
+    const statusCard = document.getElementById("subStatusCard");
+    const upsell = document.getElementById("subUpsell");
+    try {
+      const d = await (await api("/api/billing/status")).json();
+      if (d.premium && d.status && d.status !== "inactive") {
+        statusCard.classList.remove("hidden");
+        upsell.classList.add("hidden");
+        const badge = document.getElementById("subBadge");
+        badge.textContent = d.status === "trialing" ? "Trial" : d.status.charAt(0).toUpperCase() + d.status.slice(1);
+        document.getElementById("subPlan").textContent =
+          "Ask Adam Premium" + (d.plan ? ` — ${d.plan.charAt(0).toUpperCase() + d.plan.slice(1)}` : "");
+        const renew = document.getElementById("subRenew");
+        if (d.currentPeriodEnd) {
+          const nice = new Date(d.currentPeriodEnd).toLocaleDateString(undefined, { year: "numeric", month: "long", day: "numeric" });
+          const label = d.status === "trialing" ? "Trial ends " : d.status === "canceled" ? "Access until " : "Renews on ";
+          renew.textContent = label + nice;
+        } else {
+          renew.textContent = "";
+        }
+      } else {
+        statusCard.classList.add("hidden");
+        upsell.classList.remove("hidden");
+      }
+    } catch {
+      statusCard.classList.add("hidden");
+      upsell.classList.remove("hidden");
+    }
+  }
+
+  const manageBtn = document.getElementById("manageSub");
+  if (manageBtn) {
+    manageBtn.addEventListener("click", async () => {
+      const r = await api("/api/billing/portal", { method: "POST" });
+      const d = await r.json().catch(() => ({}));
+      if (r.ok && d.url) window.open(d.url, "_blank");
+      else alert(d.error || "Couldn't open subscription management.");
+    });
+  }
 })();

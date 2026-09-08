@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"
+     viewBox="0 0 512 512"
+     role="img"
+     aria-labelledby="logo-title logo-description">
+  <title id="logo-title">Cycle-aware partner chat logo</title>
+  <desc id="logo-description">Two interlocking speech bubbles surrounding a heart, with four dots representing the phases of the menstrual cycle.</desc>
+
+  <!-- Four menstrual-cycle phase markers -->
+  <circle cx="256" cy="40" r="18" fill="#FF625A"/>
+  <circle cx="472" cy="256" r="18" fill="#BE8BE8"/>
+  <circle cx="256" cy="472" r="18" fill="#087586"/>
+  <circle cx="40" cy="256" r="18" fill="#FFA68F"/>
+
+  <!-- Upper-left conversation bubble -->
+  <path fill="#087586" d="
+    M246 86
+    C158 86 88 145 88 219
+    C88 268 118 311 165 334
+    L137 392
+    C134 398 141 404 147 400
+    L216 359
+    C267 366 315 347 343 310
+    C313 304 286 290 264 268
+    C234 239 219 201 225 164
+    C241 132 266 106 298 91
+    C282 88 264 86 246 86Z"/>
+
+  <!-- Lower-right conversation bubble -->
+  <path fill="#FF625A" d="
+    M266 426
+    C354 426 424 367 424 293
+    C424 244 394 201 347 178
+    L375 120
+    C378 114 371 108 365 112
+    L296 153
+    C245 146 197 165 169 202
+    C199 208 226 222 248 244
+    C278 273 293 311 287 348
+    C271 380 246 406 214 421
+    C230 424 248 426 266 426Z"/>
+
+  <!-- Shared empathy at the centre -->
+  <path fill="#FF8D86" d="
+    M256 322
+    L207 276
+    C178 249 197 204 235 204
+    C245 204 252 208 256 216
+    C260 208 267 204 277 204
+    C315 204 334 249 305 276Z"/>
+</svg>

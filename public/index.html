@@ -6,7 +6,7 @@
   <meta name="theme-color" content="#0f2a2e" />
   <meta name="description" content="Ask Adam — a private AI mentor helping men build better relationships." />
   <title>Ask Adam — Guidance for modern men</title>
-  <link rel="icon" type="image/png" href="/logo.png" />
+  <link rel="icon" type="image/svg+xml" href="/logo.svg" />
   <link rel="apple-touch-icon" href="/logo.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="stylesheet" href="/styles.css" />
@@ -17,7 +17,7 @@
   <!-- Splash -->
   <section class="screen splash active" data-screen="splash">
     <div class="splash-inner">
-      <img src="/logo.png" alt="Ask Adam" class="logo-img" />
+      <img src="/logo.svg" alt="Ask Adam" class="logo-img" />
       <h1 class="brand">Ask Adam</h1>
       <p class="tagline">Guidance for modern men</p>
       <div class="loader"></div>
@@ -27,7 +27,7 @@
   <!-- Welcome -->
   <section class="screen" data-screen="welcome">
     <div class="pad center-col">
-      <img src="/logo.png" alt="Ask Adam" class="logo-img small" />
+      <img src="/logo.svg" alt="Ask Adam" class="logo-img small" />
       <h1 class="brand">Ask Adam</h1>
       <p class="lead">A private mentor helping men build better relationships.</p>
       <button class="btn primary" data-goto="onboarding">Get Started</button>
@@ -56,7 +56,7 @@
   <!-- Login -->
   <section class="screen" data-screen="login">
     <div class="pad center-col">
-      <img src="/logo.png" alt="Ask Adam" class="logo-img small" />
+      <img src="/logo.svg" alt="Ask Adam" class="logo-img small" />
       <h1 class="brand">Ask Adam</h1>
       <p class="lead">A private mentor helping men build better relationships.</p>
       <a class="btn primary" href="/login" id="loginBtn">Log in / Sign up</a>
@@ -118,13 +118,29 @@
 
   <!-- Chat -->
   <section class="screen chat-screen" data-screen="chat">
-    <header class="topbar">
-      <button class="icon-btn" data-goto="home" aria-label="Home">&#8592;</button>
-      <div class="chat-title"><strong>Ask Adam</strong><small id="chatStatus">Online</small></div>
-      <span class="usage-pill" id="usagePill"></span>
+    <header class="topbar chat-topbar">
+      <button class="icon-btn" id="chatMenuBtn" aria-label="Conversations">&#9776;</button>
+      <div class="chat-title"><strong id="chatTitle">Ask Adam</strong><small id="chatStatus">Online</small></div>
+      <button class="icon-btn" id="newChatBtn" aria-label="New chat">&#43;</button>
     </header>
+    <div class="usage-strip"><span class="usage-pill" id="usagePill"></span></div>
+
+    <!-- Conversation drawer -->
+    <div class="drawer-overlay hidden" id="drawerOverlay"></div>
+    <aside class="drawer hidden" id="chatDrawer">
+      <div class="drawer-head">
+        <span>Chats</span>
+        <button class="icon-btn" id="drawerNewChat" aria-label="New chat">&#43;</button>
+      </div>
+      <div class="conv-list" id="convList"></div>
+      <button class="drawer-close link" id="drawerClose">Close</button>
+    </aside>
+
     <div class="chat-log" id="chatLog"></div>
+    <button class="scroll-bottom hidden" id="scrollBottomBtn" aria-label="Scroll to latest">&#8595;</button>
+
     <form class="chat-input" id="chatForm">
+      <button type="button" class="icon-btn mic-btn" id="micBtn" aria-label="Voice input">&#127908;</button>
       <input id="chatText" type="text" placeholder="Ask Adam anything…" autocomplete="off" />
       <button class="btn primary send" type="submit" aria-label="Send">Send</button>
     </form>
@@ -244,7 +260,17 @@
       <span>Premium</span><span></span>
     </header>
     <div class="pad center-col">
-      <div class="price-card">
+      <!-- Active subscription status -->
+      <div class="price-card hidden" id="subStatusCard">
+        <span class="status-badge" id="subBadge">Active</span>
+        <h3 id="subPlan">Ask Adam Premium</h3>
+        <p class="sub-renew fineprint" id="subRenew"></p>
+        <button class="btn primary" id="manageSub">Manage subscription</button>
+        <p class="fineprint">Update your card or cancel anytime in the Paddle portal.</p>
+      </div>
+
+      <!-- Upsell (shown when not subscribed) -->
+      <div class="price-card" id="subUpsell">
         <h3>Ask Adam Premium</h3>
         <ul class="bullets">
           <li>Unlimited Ask Adam questions</li>
