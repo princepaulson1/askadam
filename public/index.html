@@ -119,9 +119,12 @@
   <!-- Chat -->
   <section class="screen chat-screen" data-screen="chat">
     <header class="topbar chat-topbar">
-      <button class="icon-btn" id="chatMenuBtn" aria-label="Conversations">&#9776;</button>
+      <button class="icon-btn" data-goto="home" aria-label="Back to home">&#8592;</button>
       <div class="chat-title"><strong id="chatTitle">Ask Adam</strong><small id="chatStatus">Online</small></div>
-      <button class="icon-btn" id="newChatBtn" aria-label="New chat">&#43;</button>
+      <div class="chat-actions">
+        <button class="icon-btn" id="newChatBtn" aria-label="New chat">&#43;</button>
+        <button class="icon-btn" id="chatMenuBtn" aria-label="Conversations">&#9776;</button>
+      </div>
     </header>
     <div class="usage-strip"><span class="usage-pill" id="usagePill"></span></div>
 

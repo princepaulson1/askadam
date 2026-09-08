@@ -138,6 +138,7 @@ body { overflow: hidden; } /* the app owns the viewport; screens scroll internal
 
 /* Usage strip under the chat top bar */
 .usage-strip { display: flex; justify-content: flex-end; padding: 6px 14px 0; }
+.chat-actions { display: flex; gap: 2px; }
 
 /* Conversation drawer */
 .drawer-overlay { position: absolute; inset: 0; background: rgba(0,0,0,0.5); z-index: 20; }
